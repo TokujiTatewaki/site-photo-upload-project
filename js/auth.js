@@ -51,7 +51,26 @@ const Auth = (() => {
   }
 
   async function signIn() {
-    return requestAccessToken(true);
+    // まずサイレント（画面遷移なし）で取得を試み、失敗した場合のみ
+    // 同意画面を表示する。ユーザー操作（ボタン押下）起点なので、
+    // ブラウザによってはサイレント取得が起動時より成功しやすい。
+    try {
+      return await requestAccessToken(false);
+    } catch (e) {
+      return requestAccessToken(true);
+    }
+  }
+
+  // アプリ起動直後に呼び出す。ブラウザ側にGoogleの有効なセッションと
+  // 過去の許可が残っていれば、ログイン画面を表示せずに済む。
+  // 失敗した場合は例外を投げずfalseを返す（呼び出し側でログイン画面を出す）。
+  async function trySilentSignIn() {
+    try {
+      await requestAccessToken(false);
+      return true;
+    } catch (e) {
+      return false;
+    }
   }
 
   async function getAccessToken() {
@@ -143,6 +162,7 @@ const Auth = (() => {
   return {
     init,
     signIn,
+    trySilentSignIn,
     getAccessToken,
     isSignedIn,
     ensureRootFolderAccess,

@@ -591,7 +591,25 @@ async function init() {
     navigator.serviceWorker.register("sw.js").catch((e) => console.warn("SW登録失敗", e));
   }
 
+  // 起動時：ブラウザにGoogleの有効なセッション・過去の許可が残っていれば、
+  // ログイン画面を表示せず自動的にメイン画面まで進める。
+  // 失敗した場合は通常通りログイン画面（手動ログインボタン）を表示する。
   showScreen("login");
+  setStatusMessage("ログイン状態を確認しています...");
+  const restored = await Auth.trySilentSignIn().catch(() => false);
+  if (restored) {
+    try {
+      await Auth.ensureRootFolderAccess();
+      await loadMasterDataAndRender();
+      showScreen("main");
+      setStatusMessage("");
+      retryPendingUploads();
+      return;
+    } catch (e) {
+      console.warn("自動ログイン後の初期化に失敗しました。ログイン画面に戻ります。", e);
+    }
+  }
+  setStatusMessage("");
 }
 
 document.addEventListener("DOMContentLoaded", init);
