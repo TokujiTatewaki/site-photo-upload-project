@@ -184,12 +184,24 @@ async function confirmModal() {
     }
   }
 
+  const confirmBtn = $("#modal-confirm");
+  const cancelBtn = $("#modal-cancel");
+  confirmBtn.disabled = true;
+  cancelBtn.disabled = true;
+
   try {
     if (type === "customer") {
-      const id = crypto.randomUUID();
-      state.masterData.customers.push({ id, name: value });
-      await persistMasterData();
-      state.selectedCustomerId = id;
+      // 同名の顧客が既にあれば新規作成せず既存を選択する
+      // （二重タップ等で同名が重複登録されるのを防ぐ）
+      const existing = state.masterData.customers.find((c) => c.name === value);
+      if (existing) {
+        state.selectedCustomerId = existing.id;
+      } else {
+        const id = crypto.randomUUID();
+        state.masterData.customers.push({ id, name: value });
+        await persistMasterData();
+        state.selectedCustomerId = id;
+      }
       state.selectedSiteId = "";
       renderCustomerOptions();
       renderSiteOptions();
@@ -198,10 +210,18 @@ async function confirmModal() {
         alert("先に顧客名を選択してください");
         return;
       }
-      const id = crypto.randomUUID();
-      state.masterData.sites.push({ id, customerId: state.selectedCustomerId, name: value });
-      await persistMasterData();
-      state.selectedSiteId = id;
+      // 同じ顧客配下に同名の施工現場が既にあれば新規作成せず既存を選択する
+      const existing = state.masterData.sites.find(
+        (s) => s.customerId === state.selectedCustomerId && s.name === value
+      );
+      if (existing) {
+        state.selectedSiteId = existing.id;
+      } else {
+        const id = crypto.randomUUID();
+        state.masterData.sites.push({ id, customerId: state.selectedCustomerId, name: value });
+        await persistMasterData();
+        state.selectedSiteId = id;
+      }
       renderSiteOptions();
     } else if (type === "yearMonth") {
       if (!state.masterData.yearMonths.includes(value)) {
@@ -214,6 +234,9 @@ async function confirmModal() {
     closeModal();
   } catch (e) {
     alert("新規項目の保存に失敗しました: " + e.message);
+  } finally {
+    confirmBtn.disabled = false;
+    cancelBtn.disabled = false;
   }
 }
 
