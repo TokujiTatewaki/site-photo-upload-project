@@ -17,6 +17,11 @@ body {
   margin: 0;
   font-size: 18px;
 }
+.app-version {
+  margin-top: 2px;
+  font-size: 11px;
+  opacity: 0.85;
+}
 
 .status-message {
   padding: 8px 16px;

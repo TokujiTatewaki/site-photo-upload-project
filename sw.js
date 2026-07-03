@@ -3,12 +3,14 @@
 // アプリ本体（HTML/CSS/JS）のみオフラインキャッシュ対象とする。
 // Google APIへの通信（認証・Drive API）はキャッシュせず、常にネットワークへ素通しする。
 // ============================================================
-const CACHE_NAME = "site-photo-upload-cache-v3";
+importScripts("./js/version.js");
+const CACHE_NAME = "site-photo-upload-cache-" + APP_VERSION;
 const PRECACHE_URLS = [
   "./",
   "./index.html",
   "./manifest.json",
   "./css/style.css",
+  "./js/version.js",
   "./js/config.js",
   "./js/db.js",
   "./js/auth.js",

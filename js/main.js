@@ -516,6 +516,9 @@ function escapeHtml(str) {
 // ---------------- 初期化・イベント登録 ----------------
 
 async function init() {
+  const versionEl = $("#app-version");
+  if (versionEl) versionEl.textContent = "Version: " + APP_VERSION;
+
   await Auth.init();
 
   $("#btn-login").addEventListener("click", async () => {
