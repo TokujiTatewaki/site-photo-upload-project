@@ -134,9 +134,15 @@ const Auth = (() => {
     return res.ok;
   }
 
-  // アクセス権が無ければPickerでの許可フローを行う。ローカルにフラグを保持し、
-  // 毎回の起動時チェックコストを下げる（ただし実際のアクセス可否確認を優先する）。
+  // アクセス権が無ければPickerでの許可フローを行う。
+  // この端末で一度許可済みであることをローカル（localStorage）に記録し、
+  // 以後はDrive APIへの確認リクエストやPicker表示自体を毎回行わないようにする
+  // （このフラグを見ずに毎回checkRootFolderAccess()を呼んでいたのが、
+  // 毎回フォルダ選択が表示されてしまっていた原因）。
   async function ensureRootFolderAccess() {
+    if (localStorage.getItem("rootFolderGranted") === "1") {
+      return true;
+    }
     const ok = await checkRootFolderAccess();
     if (ok) {
       localStorage.setItem("rootFolderGranted", "1");
