@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+<title>現場写真アップロード</title>
+<link rel="manifest" href="manifest.json" />
+<meta name="theme-color" content="#1a73e8" />
+<link rel="apple-touch-icon" href="icons/icon-192.png" />
+<link rel="icon" href="icons/icon-192.png" />
+<link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+
+<header class="app-header">
+  <h1>現場写真アップロード</h1>
+</header>
+
+<div id="status-message" class="status-message"></div>
+
+<!-- ログイン画面 -->
+<section id="screen-login" class="screen">
+  <div class="card">
+    <p>Googleアカウントでログインしてください。</p>
+    <button id="btn-login" class="btn-primary">Googleでログイン</button>
+  </div>
+</section>
+
+<!-- メイン画面 -->
+<section id="screen-main" class="screen hidden">
+  <nav class="tabs">
+    <button id="tab-main" class="tab active">アップロード</button>
+    <button id="tab-history" class="tab">履歴</button>
+  </nav>
+
+  <div id="panel-main" class="panel">
+    <div class="card">
+      <label>① 顧客名</label>
+      <select id="select-customer"></select>
+
+      <label>② 施工現場</label>
+      <select id="select-site" disabled></select>
+
+      <label>③ 施工年月</label>
+      <select id="select-yearmonth"></select>
+    </div>
+
+    <div class="card">
+      <label>写真を選択</label>
+      <input id="file-input" type="file" accept="image/*,.heic,.heif" multiple />
+      <div id="selected-files-info" class="muted">写真が選択されていません</div>
+    </div>
+
+    <div id="upload-warning" class="warning hidden">
+      アップロード中は画面を閉じたり、ロックしたりしないでください。
+    </div>
+
+    <button id="btn-upload" class="btn-primary">アップロード実行</button>
+
+    <div id="upload-progress-list" class="progress-list"></div>
+  </div>
+
+  <div id="panel-history" class="panel hidden">
+    <h2>この端末の履歴</h2>
+    <div id="local-history-list"></div>
+
+    <h2>全体共有履歴</h2>
+    <div id="shared-history-list"></div>
+  </div>
+</section>
+
+<!-- 新規作成モーダル -->
+<div id="modal-overlay" class="modal-overlay hidden">
+  <div class="modal">
+    <h3 id="modal-title"></h3>
+    <input id="modal-text-input" type="text" placeholder="入力してください" />
+    <input id="modal-month-input" type="month" class="hidden" />
+    <div class="modal-buttons">
+      <button id="modal-cancel" class="btn-secondary">キャンセル</button>
+      <button id="modal-confirm" class="btn-primary">登録</button>
+    </div>
+  </div>
+</div>
+
+<script src="js/config.js"></script>
+<script src="js/db.js"></script>
+<script src="js/auth.js"></script>
+<script src="js/drive.js"></script>
+<script src="js/compress.js"></script>
+<script src="js/main.js"></script>
+</body>
+</html>
