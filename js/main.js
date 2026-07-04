@@ -884,10 +884,10 @@ async function init() {
   });
 
   $("#btn-settings").addEventListener("click", () => {
-    $("#settings-modal-overlay").classList.remove("hidden");
+    $("#screen-settings").classList.add("open");
   });
   $("#btn-settings-close").addEventListener("click", () => {
-    $("#settings-modal-overlay").classList.add("hidden");
+    $("#screen-settings").classList.remove("open");
   });
 
   $("#tab-main").addEventListener("click", () => {
