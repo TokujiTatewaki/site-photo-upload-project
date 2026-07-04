@@ -513,6 +513,7 @@ async function startUpload() {
 
 // ---------------- レジューム（再開）----------------
 
+// オンライン復帰時・ログイン直後の自動再開用（モーダル表示なし、バックグラウンドで静かに再開する）
 async function retryPendingUploads() {
   const items = await DB.getResumableItems();
   for (const item of items) {
@@ -520,6 +521,93 @@ async function retryPendingUploads() {
     await uploadSingleItem(item);
   }
   if (items.length > 0) {
+    await renderHistory();
+  }
+}
+
+// 履歴画面の「まとめて再試行」ボタン用。通常のアップロードと同じ進捗モーダル
+// （全体／個別ファイルの進捗バー、中断ボタン）を表示しながら、
+// 中断・待機中・失敗の未完了ファイルをすべて連続で再試行する。
+async function retryAllUploads() {
+  if (state.uploadAbortController) return; // 実行中の多重起動防止
+
+  const resumable = await DB.getResumableItems();
+  const items = resumable.filter((i) => i.blob);
+  const missingBlobCount = resumable.length - items.length;
+
+  if (items.length === 0) {
+    if (missingBlobCount > 0) {
+      alert(
+        "再試行対象のファイルデータが端末に残っていないため、自動では再開できません。お手数ですが、写真を選び直して再度アップロードしてください。"
+      );
+    }
+    await renderHistory();
+    return;
+  }
+
+  state.uploadAbortController = new AbortController();
+  const totalBytesAll = items.reduce((sum, i) => sum + i.totalBytes, 0);
+  let completedBytesAll = 0;
+  let cancelledMidway = false;
+  let failedCount = 0;
+
+  setUploadOverallProgress(0, totalBytesAll, 0, items.length);
+  setUploadCurrentProgress("-", 0, 1);
+  showUploadModalMessage("");
+  setUploadModalMode("running");
+  openUploadModal();
+  setStatusMessage("未完了ファイルを再試行しています...");
+
+  try {
+    for (let idx = 0; idx < items.length; idx++) {
+      if (state.uploadAbortController.signal.aborted) {
+        cancelledMidway = true;
+        break;
+      }
+      const item = items[idx];
+      setUploadCurrentProgress(item.fileName, item.uploadedBytes || 0, item.totalBytes);
+      setUploadOverallProgress(completedBytesAll, totalBytesAll, idx, items.length);
+
+      const result = await uploadSingleItem(
+        item,
+        (uploaded, total) => {
+          setUploadCurrentProgress(item.fileName, uploaded, total);
+          setUploadOverallProgress(completedBytesAll + uploaded, totalBytesAll, idx, items.length);
+        },
+        state.uploadAbortController.signal
+      );
+
+      if (result.status === "cancelled") {
+        cancelledMidway = true;
+        break;
+      }
+      if (result.status !== "completed") failedCount++;
+      completedBytesAll += item.totalBytes;
+      setUploadOverallProgress(completedBytesAll, totalBytesAll, idx + 1, items.length);
+    }
+
+    setUploadModalMode("done");
+    if (cancelledMidway) {
+      showUploadModalMessage(
+        "再試行を中断しました。未完了分は履歴画面からまとめて再試行できます。",
+        true
+      );
+    } else if (failedCount === 0) {
+      showUploadModalMessage("全てのアップロードが完了しました。");
+    } else {
+      showUploadModalMessage(
+        `${failedCount}件が未完了です。履歴画面から再試行できます。`,
+        true
+      );
+    }
+  } catch (e) {
+    setUploadModalMode("done");
+    showUploadModalMessage("再試行処理でエラーが発生しました: " + e.message, true);
+  } finally {
+    setStatusMessage("");
+    state.uploadAbortController = null;
+    // 中断・完了いずれの場合も、履歴画面の表示を必ず最新状態に更新する
+    // （以前はここが漏れており、タブを切り替えるまで完了状態に見えない不具合があった）
     await renderHistory();
   }
 }
@@ -691,11 +779,9 @@ async function init() {
     resetSelectionForNextUpload();
   });
 
-  $("#btn-retry-all").addEventListener("click", async () => {
+  $("#btn-retry-all").addEventListener("click", () => {
     $("#btn-retry-all").disabled = true;
-    setStatusMessage("未完了ファイルをまとめて再試行しています...");
-    await retryPendingUploads();
-    setStatusMessage("");
+    retryAllUploads();
   });
 
   $("#tab-main").addEventListener("click", () => {
