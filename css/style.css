@@ -203,6 +203,26 @@ input[type="file"] {
 .history-row.status-pending {
   border-left-color: #f9ab00;
 }
+.history-row-content {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+.thumb {
+  width: 40px;
+  height: 40px;
+  flex-shrink: 0;
+  border-radius: 4px;
+  background: #e8eaed;
+  object-fit: cover;
+}
+.thumb-placeholder {
+  background: #e8eaed;
+}
+.history-text {
+  flex: 1;
+  min-width: 0;
+}
 .history-main {
   display: flex;
   justify-content: space-between;
@@ -258,6 +278,31 @@ input[type="file"] {
 
 .upload-modal {
   max-width: 400px;
+}
+.upload-modal-status {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 14px;
+  min-height: 22px;
+}
+.upload-modal-stage {
+  font-size: 13px;
+  color: #5f6368;
+}
+.spinner {
+  width: 22px;
+  height: 22px;
+  flex-shrink: 0;
+  border: 3px solid #e8eaed;
+  border-top-color: #1a73e8;
+  border-radius: 50%;
+  animation: upload-spin 0.8s linear infinite;
+}
+@keyframes upload-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 .upload-progress-block {
   margin-bottom: 18px;

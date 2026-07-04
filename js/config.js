@@ -25,6 +25,13 @@ const CONFIG = {
   IMAGE_MAX_DIMENSION: 2000, // 長辺の最大ピクセル数
   IMAGE_QUALITY: 0.8, // JPEG品質（0〜1）
 
+  // 履歴一覧のサムネイル用（低解像度・小さいサイズでよい）
+  THUMBNAIL_MAX_DIMENSION: 96, // 長辺の最大ピクセル数
+  THUMBNAIL_QUALITY: 0.5, // JPEG品質（0〜1）
+
+  // 全体共有履歴に表示する対象期間（日数）
+  SHARED_HISTORY_DAYS: 7,
+
   // レジューム用アップロードのチャンクサイズ（バイト）。Drive APIの仕様上256KBの倍数を推奨。
   UPLOAD_CHUNK_SIZE: 5 * 1024 * 1024, // 5MB
 

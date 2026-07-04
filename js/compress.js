@@ -58,20 +58,22 @@ const Compress = (() => {
     };
   }
 
-  async function resizeAndCompress(blob) {
-    const imgLike = await loadImageBitmapOrElement(blob);
+  function drawToCanvas(imgLike, maxDim) {
     const { width, height } = getSize(imgLike);
-    const maxDim = CONFIG.IMAGE_MAX_DIMENSION;
     const scale = Math.min(1, maxDim / Math.max(width, height));
-    const targetW = Math.round(width * scale);
-    const targetH = Math.round(height * scale);
+    const targetW = Math.max(1, Math.round(width * scale));
+    const targetH = Math.max(1, Math.round(height * scale));
 
     const canvas = document.createElement("canvas");
     canvas.width = targetW;
     canvas.height = targetH;
     const ctx = canvas.getContext("2d");
     ctx.drawImage(imgLike, 0, 0, targetW, targetH);
+    return canvas;
+  }
 
+  function resizeAndCompress(imgLike) {
+    const canvas = drawToCanvas(imgLike, CONFIG.IMAGE_MAX_DIMENSION);
     return new Promise((resolve, reject) => {
       canvas.toBlob(
         (outBlob) => {
@@ -87,18 +89,34 @@ const Compress = (() => {
     });
   }
 
-  // file: 端末で選択された元ファイル(File)。戻り値: { blob, mimeType, extension }
+  // 履歴一覧表示用の小さなサムネイル（低解像度でよい）をdata URLとして生成する
+  function makeThumbnailDataUrl(imgLike) {
+    const canvas = drawToCanvas(imgLike, CONFIG.THUMBNAIL_MAX_DIMENSION);
+    return canvas.toDataURL("image/jpeg", CONFIG.THUMBNAIL_QUALITY);
+  }
+
+  // file: 端末で選択された元ファイル(File)。戻り値: { blob, mimeType, extension, thumbnailDataUrl }
   async function processFile(file) {
     const jpegSourceBlob = await toJpegBlobIfHeic(file);
-    const compressedBlob = await resizeAndCompress(jpegSourceBlob);
-    return {
-      blob: compressedBlob,
-      mimeType: "image/jpeg",
-      extension: "jpg",
-      originalName: file.name,
-      originalSize: file.size,
-      compressedSize: compressedBlob.size,
-    };
+    const imgLike = await loadImageBitmapOrElement(jpegSourceBlob);
+    try {
+      const compressedBlob = await resizeAndCompress(imgLike);
+      const thumbnailDataUrl = makeThumbnailDataUrl(imgLike);
+      return {
+        blob: compressedBlob,
+        mimeType: "image/jpeg",
+        extension: "jpg",
+        originalName: file.name,
+        originalSize: file.size,
+        compressedSize: compressedBlob.size,
+        thumbnailDataUrl,
+      };
+    } finally {
+      // ImageBitmapの場合は明示的にリソースを解放する
+      if (imgLike && typeof imgLike.close === "function") {
+        imgLike.close();
+      }
+    }
   }
 
   return { processFile, isHeic };

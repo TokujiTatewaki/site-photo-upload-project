@@ -56,11 +56,11 @@
   </div>
 
   <div id="panel-history" class="panel hidden">
-    <h2>この端末の履歴</h2>
+    <h2>本日分の履歴(本日)</h2>
     <button id="btn-retry-all" class="btn-secondary retry-all-btn hidden"></button>
     <div id="local-history-list"></div>
 
-    <h2>全体共有履歴</h2>
+    <h2>全体共有履歴(過去1週間)</h2>
     <div id="shared-history-list"></div>
   </div>
 </section>
@@ -82,6 +82,11 @@
 <div id="upload-modal-overlay" class="modal-overlay hidden">
   <div class="modal upload-modal">
     <h3>アップロード</h3>
+
+    <div class="upload-modal-status">
+      <div id="upload-modal-spinner" class="spinner hidden"></div>
+      <div id="upload-modal-stage" class="upload-modal-stage"></div>
+    </div>
 
     <div class="upload-progress-block">
       <div class="upload-progress-label">

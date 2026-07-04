@@ -275,12 +275,19 @@ function closeUploadModal() {
   $("#upload-modal-overlay").classList.add("hidden");
 }
 
-// mode: "running"（中断ボタン表示）| "done"（閉じるボタン表示）
+// mode: "running"（中断ボタン・スピナー表示）| "done"（閉じるボタン表示）
 function setUploadModalMode(mode) {
   $("#btn-upload-cancel").classList.toggle("hidden", mode !== "running");
   $("#btn-upload-cancel").disabled = false;
   $("#btn-upload-close").classList.toggle("hidden", mode !== "done");
   $("#upload-modal-warning").classList.toggle("hidden", mode !== "running");
+  $("#upload-modal-spinner").classList.toggle("hidden", mode !== "running");
+}
+
+// アップロード処理の現在の段階（フォルダ準備中、圧縮中など）をポップアップ内に表示する
+// （以前はメイン画面上部のステータス欄に表示していたが、ポップアップ側に集約する）
+function setUploadStageMessage(msg) {
+  $("#upload-modal-stage").textContent = msg || "";
 }
 
 function showUploadModalMessage(msg, isError) {
@@ -376,19 +383,19 @@ async function startUpload() {
   showUploadModalMessage("");
   setUploadModalMode("running");
   openUploadModal();
-  setStatusMessage("フォルダを準備しています...");
+  setUploadStageMessage("フォルダを準備しています...");
 
   try {
     const folderId = await Drive.ensureCustomerSiteFolder(customerName, siteName);
 
-    setStatusMessage("画像を圧縮しています...");
+    setUploadStageMessage("画像を圧縮しています...");
     const compressedList = [];
     for (const file of state.selectedFiles) {
       const compressed = await Compress.processFile(file);
       compressedList.push(compressed);
     }
 
-    setStatusMessage("ファイル名を採番しています...");
+    setUploadStageMessage("ファイル名を採番しています...");
     const fileNames = await Drive.buildFileNames(
       folderId,
       yearMonth,
@@ -416,6 +423,7 @@ async function startUpload() {
         yearMonth,
         device: getDeviceId(),
         createdAt: new Date().toISOString(),
+        thumbnailDataUrl: c.thumbnailDataUrl || null,
       };
       await DB.addUploadItem(item);
       items.push(item);
@@ -425,7 +433,7 @@ async function startUpload() {
     let completedBytesAll = 0;
     let cancelledMidway = false;
 
-    setStatusMessage("アップロード中...");
+    setUploadStageMessage("アップロード中...");
     const results = [];
     for (let idx = 0; idx < items.length; idx++) {
       if (state.uploadAbortController.signal.aborted) {
@@ -468,6 +476,7 @@ async function startUpload() {
         sizeBytes: item.totalBytes,
         driveFileId: result.driveFileId || null,
         device: item.device,
+        thumbnailDataUrl: item.thumbnailDataUrl || null,
       }));
 
     if (historyRecords.length > 0) {
@@ -483,6 +492,7 @@ async function startUpload() {
     ).length;
 
     setUploadModalMode("done");
+    setUploadStageMessage("");
     if (cancelledMidway) {
       showUploadModalMessage(
         "アップロードを中断しました。未完了分は履歴画面から再開できます。",
@@ -497,14 +507,13 @@ async function startUpload() {
       );
     }
 
-    setStatusMessage("");
     state.selectedFiles = [];
     $("#file-input").value = "";
     updateSelectedFilesInfo();
   } catch (e) {
     setUploadModalMode("done");
+    setUploadStageMessage("");
     showUploadModalMessage("アップロード処理でエラーが発生しました: " + e.message, true);
-    setStatusMessage("");
   } finally {
     $("#btn-upload").disabled = false;
     state.uploadAbortController = null;
@@ -556,7 +565,7 @@ async function retryAllUploads() {
   showUploadModalMessage("");
   setUploadModalMode("running");
   openUploadModal();
-  setStatusMessage("未完了ファイルを再試行しています...");
+  setUploadStageMessage("未完了ファイルを再試行しています...");
 
   try {
     for (let idx = 0; idx < items.length; idx++) {
@@ -587,6 +596,7 @@ async function retryAllUploads() {
     }
 
     setUploadModalMode("done");
+    setUploadStageMessage("");
     if (cancelledMidway) {
       showUploadModalMessage(
         "再試行を中断しました。未完了分は履歴画面からまとめて再試行できます。",
@@ -602,9 +612,9 @@ async function retryAllUploads() {
     }
   } catch (e) {
     setUploadModalMode("done");
+    setUploadStageMessage("");
     showUploadModalMessage("再試行処理でエラーが発生しました: " + e.message, true);
   } finally {
-    setStatusMessage("");
     state.uploadAbortController = null;
     // 中断・完了いずれの場合も、履歴画面の表示を必ず最新状態に更新する
     // （以前はここが漏れており、タブを切り替えるまで完了状態に見えない不具合があった）
@@ -631,22 +641,63 @@ function statusLabel(status) {
   );
 }
 
+// isoString（createdAt等）が「今日」の日付かどうか（端末のローカル日付で判定）
+function isToday(isoString) {
+  if (!isoString) return false;
+  const d = new Date(isoString);
+  if (Number.isNaN(d.getTime())) return false;
+  const now = new Date();
+  return (
+    d.getFullYear() === now.getFullYear() &&
+    d.getMonth() === now.getMonth() &&
+    d.getDate() === now.getDate()
+  );
+}
+
+// isoStringが現在から指定日数以内かどうか
+function isWithinDays(isoString, days) {
+  if (!isoString) return false;
+  const t = new Date(isoString).getTime();
+  if (Number.isNaN(t)) return false;
+  return Date.now() - t <= days * 24 * 60 * 60 * 1000;
+}
+
+// 履歴レコードの代表時刻（完了していれば完了日時、していなければ開始日時）
+function recordTimestamp(rec) {
+  return rec.completedAt || rec.startedAt || rec.createdAt;
+}
+
+// 小さなサムネイル表示用のHTML（サムネイルが無い場合はプレースホルダー枠のみ）
+function thumbHtml(dataUrl) {
+  if (dataUrl) {
+    return `<img class="thumb" src="${dataUrl}" alt="" />`;
+  }
+  return `<div class="thumb thumb-placeholder"></div>`;
+}
+
 async function renderHistory() {
-  const localItems = await DB.getAllUploadItems();
+  const allLocalItems = await DB.getAllUploadItems();
+  const todayItems = allLocalItems.filter((item) => isToday(item.createdAt));
+
   const localEl = $("#local-history-list");
   localEl.innerHTML = "";
-  if (localItems.length === 0) {
-    localEl.innerHTML = "<p>この端末での履歴はまだありません。</p>";
+  if (todayItems.length === 0) {
+    localEl.innerHTML = "<p>本日の履歴はまだありません。</p>";
   }
-  localItems.forEach((item) => {
+  todayItems.forEach((item) => {
     const row = document.createElement("div");
     row.className = "history-row status-" + item.status;
     row.innerHTML = `
-      <div class="history-main">
-        <strong>${escapeHtml(item.fileName)}</strong>
-        <span class="badge">${statusLabel(item.status)}</span>
+      <div class="history-row-content">
+        ${thumbHtml(item.thumbnailDataUrl)}
+        <div class="history-text">
+          <div class="history-main">
+            <strong>${escapeHtml(item.fileName)}</strong>
+            <span class="badge">${statusLabel(item.status)}</span>
+          </div>
+          <div class="history-sub">${escapeHtml(item.customer)} / ${escapeHtml(item.site)} / ${formatYearMonth(item.yearMonth)}</div>
+        </div>
       </div>
-      <div class="history-sub">${escapeHtml(item.customer)} / ${escapeHtml(item.site)} / ${formatYearMonth(item.yearMonth)}</div>
     `;
     localEl.appendChild(row);
   });
@@ -656,7 +707,9 @@ async function renderHistory() {
   // 履歴に残る。ファイルごとに個別の再試行ボタンを出すと複数残った際に
   // 1つずつ押す必要があり手間なので、"completed"以外が1件でもあれば
   // まとめて全数を再試行できるボタンを1つだけ表示する。
-  const resumableCount = localItems.filter((i) => i.status !== "completed").length;
+  // なお、未完了件数は「本日」の表示絞り込みに関わらず、全期間を対象にする
+  // （日をまたいだ未完了ファイルも取りこぼさず再試行できるようにするため）。
+  const resumableCount = allLocalItems.filter((i) => i.status !== "completed").length;
   const retryAllBtn = $("#btn-retry-all");
   if (resumableCount > 0) {
     retryAllBtn.textContent = `未完了の${resumableCount}件をまとめて再試行`;
@@ -670,22 +723,28 @@ async function renderHistory() {
   sharedEl.innerHTML = "読み込み中...";
   try {
     const shared = await Drive.loadHistory();
+    const recentShared = shared.filter((rec) => isWithinDays(recordTimestamp(rec), CONFIG.SHARED_HISTORY_DAYS));
     sharedEl.innerHTML = "";
-    if (shared.length === 0) {
-      sharedEl.innerHTML = "<p>共有履歴はまだありません。</p>";
+    if (recentShared.length === 0) {
+      sharedEl.innerHTML = "<p>直近1週間の共有履歴はありません。</p>";
     }
-    shared
+    recentShared
       .slice()
       .reverse()
       .forEach((rec) => {
         const row = document.createElement("div");
         row.className = "history-row status-" + rec.status;
         row.innerHTML = `
-          <div class="history-main">
-            <strong>${escapeHtml(rec.fileName)}</strong>
-            <span class="badge">${statusLabel(rec.status)}</span>
+          <div class="history-row-content">
+            ${thumbHtml(rec.thumbnailDataUrl)}
+            <div class="history-text">
+              <div class="history-main">
+                <strong>${escapeHtml(rec.fileName)}</strong>
+                <span class="badge">${statusLabel(rec.status)}</span>
+              </div>
+              <div class="history-sub">${escapeHtml(rec.customer)} / ${escapeHtml(rec.site)} / ${formatYearMonth(rec.yearMonth)} / ${escapeHtml(rec.device || "")}</div>
+            </div>
           </div>
-          <div class="history-sub">${escapeHtml(rec.customer)} / ${escapeHtml(rec.site)} / ${formatYearMonth(rec.yearMonth)} / ${escapeHtml(rec.device || "")}</div>
         `;
         sharedEl.appendChild(row);
       });
