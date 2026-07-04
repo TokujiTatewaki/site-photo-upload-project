@@ -95,13 +95,52 @@ const Compress = (() => {
     return canvas.toDataURL("image/jpeg", CONFIG.THUMBNAIL_QUALITY);
   }
 
-  // file: 端末で選択された元ファイル(File)。戻り値: { blob, mimeType, extension, thumbnailDataUrl }
+  // 通知メール添付用の中サイズサムネイルをBlobとして生成する。
+  // Googleドライブ側の自動サムネイル生成（非同期・生成タイミング不定）に依存せず、
+  // 確実にメールへ埋め込めるようにするため、端末側であらかじめ生成しておく。
+  function makeEmailThumbnailBlob(imgLike) {
+    const canvas = drawToCanvas(imgLike, CONFIG.EMAIL_THUMBNAIL_MAX_DIMENSION);
+    return new Promise((resolve, reject) => {
+      canvas.toBlob(
+        (outBlob) => {
+          if (!outBlob) {
+            reject(new Error("メール用サムネイルの生成に失敗しました"));
+            return;
+          }
+          resolve(outBlob);
+        },
+        "image/jpeg",
+        CONFIG.EMAIL_THUMBNAIL_QUALITY
+      );
+    });
+  }
+
+  // 既に圧縮済みのBlob（DBに保存されている再試行対象アイテムのblobなど）から
+  // メール添付用サムネイルを生成する。「まとめて再試行」時、元のFileオブジェクトは
+  // もう無く圧縮済みBlobしか残っていない場合に使う。
+  async function makeEmailThumbnailFromBlob(blob) {
+    const imgLike = await loadImageBitmapOrElement(blob);
+    try {
+      return await makeEmailThumbnailBlob(imgLike);
+    } finally {
+      if (imgLike && typeof imgLike.close === "function") {
+        imgLike.close();
+      }
+    }
+  }
+
+  // file: 端末で選択された元ファイル(File)。
+  // 戻り値: { blob, mimeType, extension, thumbnailDataUrl, emailThumbnailBlob }
+  // emailThumbnailBlobは通知メール機能が有効(CONFIG.NOTIFY_WEBAPP_URL設定済み)の場合のみ生成する。
   async function processFile(file) {
     const jpegSourceBlob = await toJpegBlobIfHeic(file);
     const imgLike = await loadImageBitmapOrElement(jpegSourceBlob);
     try {
       const compressedBlob = await resizeAndCompress(imgLike);
       const thumbnailDataUrl = makeThumbnailDataUrl(imgLike);
+      const emailThumbnailBlob = CONFIG.NOTIFY_WEBAPP_URL
+        ? await makeEmailThumbnailBlob(imgLike)
+        : null;
       return {
         blob: compressedBlob,
         mimeType: "image/jpeg",
@@ -110,6 +149,7 @@ const Compress = (() => {
         originalSize: file.size,
         compressedSize: compressedBlob.size,
         thumbnailDataUrl,
+        emailThumbnailBlob,
       };
     } finally {
       // ImageBitmapの場合は明示的にリソースを解放する
@@ -119,7 +159,7 @@ const Compress = (() => {
     }
   }
 
-  return { processFile, isHeic };
+  return { processFile, isHeic, makeEmailThumbnailFromBlob };
 })();
 
 window.Compress = Compress;

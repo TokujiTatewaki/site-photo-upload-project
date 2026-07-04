@@ -60,6 +60,38 @@ const Drive = (() => {
     return siteFolder.id;
   }
 
+  // 通知メール添付用サムネイルの保存先（ルート直下の専用の隠しフォルダ）。
+  // 顧客/現場フォルダとは別にしておき、本体写真のフォルダ構成を汚さないようにする。
+  async function ensureEmailThumbnailsFolder() {
+    const folder = await findOrCreateFolder(CONFIG.EMAIL_THUMBNAILS_FOLDER_NAME, CONFIG.ROOT_FOLDER_ID);
+    return folder.id;
+  }
+
+  // 通知メール添付用サムネイル（小さい画像）を1回のリクエストでアップロードする。
+  // サイズが小さいためresumable uploadは使わず、multipartの単発アップロードでよい。
+  async function uploadEmailThumbnail(blob, fileName) {
+    const folderId = await ensureEmailThumbnailsFolder();
+    const boundary = "-------driveimageboundary" + Date.now();
+    const metadata = { name: fileName, parents: [folderId] };
+    const head =
+      `--${boundary}\r\n` +
+      `Content-Type: application/json; charset=UTF-8\r\n\r\n` +
+      JSON.stringify(metadata) +
+      `\r\n--${boundary}\r\n` +
+      `Content-Type: ${blob.type || "image/jpeg"}\r\n\r\n`;
+    const tail = `\r\n--${boundary}--`;
+    // メタデータ(文字列)と画像本体(Blob)を混在させて、正しいバイト列としてリクエストボディを組み立てる
+    // （文字列連結だとバイナリデータが壊れるため、Blobコンストラクタで結合する）
+    const body = new Blob([head, blob, tail]);
+
+    const res = await apiFetch(`${UPLOAD_BASE}/files?uploadType=multipart&fields=id`, {
+      method: "POST",
+      headers: { "Content-Type": `multipart/related; boundary=${boundary}` },
+      body,
+    });
+    return res.json(); // { id }
+  }
+
   // ---- フォルダ内ファイル一覧（連番採番用、ページング対応） ----
   async function listAllFiles(folderId) {
     let files = [];
@@ -358,6 +390,8 @@ const Drive = (() => {
 
   return {
     ensureCustomerSiteFolder,
+    ensureEmailThumbnailsFolder,
+    uploadEmailThumbnail,
     buildFileName,
     buildFileNames,
     loadMasterData,

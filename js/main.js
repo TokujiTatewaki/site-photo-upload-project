@@ -166,6 +166,29 @@ function buildDriveFolderUrl(folderId) {
   return "https://drive.google.com/drive/folders/" + folderId;
 }
 
+// 通知メールに埋め込むサムネイル画像をDriveにアップロードし、ファイルIDの一覧を返す。
+// Googleドライブ側の自動サムネイル生成に頼らず確実にメールへ表示するため、
+// 端末側で生成した画像を専用の小さなファイルとしてアップロードしておく方式。
+// entries: [{ id: 識別用文字列, blob: Blob }, ...]（blobが無いものはスキップ）
+// 個々のアップロード失敗はスキップするのみで、本体アップロードや通知送信自体は継続する。
+async function uploadNotifyThumbnails(entries) {
+  const fileIds = [];
+  for (const entry of entries) {
+    if (fileIds.length >= CONFIG.NOTIFY_MAX_INLINE_PHOTOS) break;
+    if (!entry.blob) continue;
+    try {
+      const file = await Drive.uploadEmailThumbnail(entry.blob, `email-thumb_${entry.id}.jpg`);
+      fileIds.push(file.id);
+    } catch (e) {
+      console.warn(
+        "通知メール用サムネイルのアップロードに失敗しました（本体の写真アップロードには影響ありません）",
+        e
+      );
+    }
+  }
+  return fileIds;
+}
+
 // 現在の年月を"YYYYMM"形式で返す
 function getCurrentYearMonth() {
   const now = new Date();
@@ -477,6 +500,8 @@ async function startUpload() {
     );
 
     const items = [];
+    // 通知メールに埋め込むサムネイル画像（DBには保存しない。この関数の実行中のみ使う一時データ）
+    const emailThumbnailBlobs = [];
     for (let i = 0; i < compressedList.length; i++) {
       const c = compressedList[i];
       const item = {
@@ -498,6 +523,7 @@ async function startUpload() {
       };
       await DB.addUploadItem(item);
       items.push(item);
+      emailThumbnailBlobs.push(c.emailThumbnailBlob || null);
     }
 
     const totalBytesAll = items.reduce((sum, i) => sum + i.totalBytes, 0);
@@ -562,11 +588,21 @@ async function startUpload() {
       (r) => r.result.status === "failed" || r.result.status === "paused"
     ).length;
     const successCount = results.filter((r) => r.result.status === "completed").length;
-    // 通知メールにサムネイル画像を埋め込むため、完了したファイルのDriveファイルIDを集める
-    // （多すぎるとメールが肥大化するため、上限件数だけ送る。全件数はphotoCountで別途伝える）
-    const uploadedFileIds = results
-      .filter((r) => r.result.status === "completed" && r.result.driveFileId)
-      .map((r) => r.result.driveFileId);
+
+    // 通知メールに埋め込むサムネイル画像をアップロードする（通知メール機能が有効な場合のみ）。
+    // Googleドライブの自動サムネイル生成（非同期）を待つのではなく、端末側で生成した
+    // 専用の小さな画像を確実に用意しておく方式。
+    let notifyPhotoFileIds = [];
+    if (CONFIG.NOTIFY_WEBAPP_URL) {
+      setUploadStageMessage("通知メール用の画像を準備しています...");
+      const thumbEntries = [];
+      for (let idx = 0; idx < results.length; idx++) {
+        if (results[idx].result.status === "completed") {
+          thumbEntries.push({ id: results[idx].item.id, blob: emailThumbnailBlobs[idx] });
+        }
+      }
+      notifyPhotoFileIds = await uploadNotifyThumbnails(thumbEntries);
+    }
 
     setUploadModalMode("done");
     setUploadStageMessage("");
@@ -598,10 +634,8 @@ async function startUpload() {
       totalCount: items.length,
       timestamp: new Date().toISOString(),
       folderUrl: buildDriveFolderUrl(folderId),
-      photoFileIdsJson: JSON.stringify(
-        uploadedFileIds.slice(0, CONFIG.NOTIFY_MAX_INLINE_PHOTOS)
-      ),
-      photoCount: uploadedFileIds.length,
+      photoFileIdsJson: JSON.stringify(notifyPhotoFileIds),
+      photoCount: successCount,
     });
 
     state.selectedFiles = [];
@@ -701,6 +735,28 @@ async function retryAllUploads() {
       setUploadOverallProgress(completedBytesAll, totalBytesAll, idx + 1, items.length);
     }
 
+    // 通知メールに埋め込むサムネイル画像をアップロードする（通知メール機能が有効な場合のみ）。
+    // まとめて再試行時は元のFileオブジェクトはもう無いため、DBに保存済みの圧縮後Blobから
+    // メール用サムネイルを都度生成する。
+    let notifyPhotoFileIds = [];
+    if (CONFIG.NOTIFY_WEBAPP_URL && completedItems.length > 0) {
+      setUploadStageMessage("通知メール用の画像を準備しています...");
+      const thumbEntries = [];
+      for (const { item } of completedItems) {
+        if (thumbEntries.length >= CONFIG.NOTIFY_MAX_INLINE_PHOTOS) break;
+        try {
+          const thumbBlob = await Compress.makeEmailThumbnailFromBlob(item.blob);
+          thumbEntries.push({ id: item.id, blob: thumbBlob });
+        } catch (e) {
+          console.warn(
+            "通知メール用サムネイルの生成に失敗しました（本体のアップロードには影響ありません）",
+            e
+          );
+        }
+      }
+      notifyPhotoFileIds = await uploadNotifyThumbnails(thumbEntries);
+    }
+
     setUploadModalMode("done");
     setUploadStageMessage("");
     if (cancelledMidway) {
@@ -734,9 +790,6 @@ async function retryAllUploads() {
         ])
       ).values()
     );
-    const uploadedFileIds = completedItems
-      .map((c) => c.driveFileId)
-      .filter(Boolean);
     Notify.sendUploadNotification({
       event: cancelledMidway ? "cancelled" : failedCount === 0 ? "completed" : "partial_failed",
       customer: "まとめて再試行",
@@ -749,10 +802,8 @@ async function retryAllUploads() {
       totalCount: items.length,
       timestamp: new Date().toISOString(),
       folderLinksJson: JSON.stringify(folderGroups),
-      photoFileIdsJson: JSON.stringify(
-        uploadedFileIds.slice(0, CONFIG.NOTIFY_MAX_INLINE_PHOTOS)
-      ),
-      photoCount: uploadedFileIds.length,
+      photoFileIdsJson: JSON.stringify(notifyPhotoFileIds),
+      photoCount: successCount,
     });
   } catch (e) {
     setUploadModalMode("done");

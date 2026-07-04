@@ -106,19 +106,34 @@ function handleNotifyRequest(data) {
     }
     MailApp.sendEmail(mailOptions);
 
+    // メール本文に埋め込んだサムネイル専用ファイル（アプリ側が通知用に一時的にアップロードした
+    // 小さな画像）は、送信後にゴミ箱へ移動してGoogleドライブを汚さないようにする。
+    // 削除に失敗しても致命的ではないため、個別に無視して処理を続ける。
+    photos.usedFileIds.forEach(function (fileId) {
+      try {
+        DriveApp.getFileById(fileId).setTrashed(true);
+      } catch (e) {
+        // 無視する
+      }
+    });
+
     return jsonResponse({ ok: true });
   } catch (err) {
     return jsonResponse({ ok: false, error: String(err) });
   }
 }
 
-// data.photoFileIdsJson（アップロード済みDriveファイルIDのJSON配列文字列）から、
-// 各ファイルのDrive生成サムネイルを取得し、メール本文に埋め込むための
-// inlineImages（cid指定用のBlobマップ）とHTML断片を組み立てる。
+// data.photoFileIdsJson（通知用に一時アップロードされたサムネイル専用ファイルの
+// DriveファイルIDのJSON配列文字列）から、各ファイルの中身を取得し、メール本文に
+// 埋め込むためのinlineImages（cid指定用のBlobマップ）とHTML断片を組み立てる。
+// これらはアプリ側(js/compress.js・js/drive.js)があらかじめ生成・アップロードした
+// 専用の小さな画像であり、Driveの自動サムネイル生成（非同期・タイミング不定）とは異なり
+// getBlob()で即座に確実に取得できる。
 // 個々の画像取得に失敗しても、その画像だけスキップしてメール送信自体は継続する。
 function fetchInlinePhotos(data) {
   const inlineImages = {};
   const htmlParts = [];
+  const usedFileIds = [];
 
   let fileIds = [];
   if (data.photoFileIdsJson) {
@@ -133,33 +148,24 @@ function fetchInlinePhotos(data) {
   }
   fileIds = fileIds.slice(0, MAX_INLINE_PHOTOS);
 
-  if (fileIds.length === 0) {
-    return { inlineImages, htmlParts };
-  }
-
-  // アップロード直後はDrive側のサムネイル生成が間に合っていないことがあるため、
-  // 少し待ってから取得する（完全な対策ではないが簡易的な緩和策）。
-  Utilities.sleep(2000);
-
   fileIds.forEach(function (fileId, idx) {
     try {
       const file = DriveApp.getFileById(fileId);
-      const thumb = file.getThumbnail();
-      if (thumb) {
-        const cid = "photo" + idx;
-        inlineImages[cid] = thumb;
-        htmlParts.push(
-          '<img src="cid:' +
-            cid +
-            '" alt="" style="max-width:220px;max-height:220px;margin:4px;border-radius:6px;border:1px solid #ddd;" />'
-        );
-      }
+      const blob = file.getBlob();
+      const cid = "photo" + idx;
+      inlineImages[cid] = blob;
+      htmlParts.push(
+        '<img src="cid:' +
+          cid +
+          '" alt="" style="max-width:220px;max-height:220px;margin:4px;border-radius:6px;border:1px solid #ddd;" />'
+      );
+      usedFileIds.push(fileId);
     } catch (e) {
-      // 個別の画像取得失敗は無視する（サムネイル未生成・アクセス不可等）
+      // 個別の画像取得失敗は無視する（アクセス不可・既に削除済み等）
     }
   });
 
-  return { inlineImages, htmlParts };
+  return { inlineImages, htmlParts, usedFileIds };
 }
 
 // data.folderUrl（単一フォルダ）/ data.folderLinksJson（複数フォルダのJSON配列）から

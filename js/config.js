@@ -51,4 +51,13 @@ const CONFIG = {
   // （多すぎるとメールが肥大化する・GETリクエストのURLが長くなりすぎるための上限。
   //   実際の完了件数はphotoCountとして別途送るので、超過分は「ほかN件」として案内される）
   NOTIFY_MAX_INLINE_PHOTOS: 10,
+
+  // 通知メール添付用サムネイル画像の設定
+  // Googleドライブ側の自動サムネイル生成（非同期・生成タイミング不定）に依存せず、
+  // 端末側で確実に用意できる中サイズ画像を別途生成してDriveにアップロードし、
+  // Apps Script側はそれをそのまま取得してメールに埋め込む（送信後は自動で削除される）。
+  EMAIL_THUMBNAIL_MAX_DIMENSION: 480, // 長辺の最大ピクセル数
+  EMAIL_THUMBNAIL_QUALITY: 0.55, // JPEG品質（0〜1）
+  // このサムネイル専用ファイルの保存先（ルート直下の専用フォルダ。顧客/現場フォルダは汚さない）
+  EMAIL_THUMBNAILS_FOLDER_NAME: ".email-thumbnails",
 };
