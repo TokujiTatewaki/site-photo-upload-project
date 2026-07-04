@@ -16,6 +16,7 @@ const PRECACHE_URLS = [
   "./js/auth.js",
   "./js/drive.js",
   "./js/compress.js",
+  "./js/notify.js",
   "./js/main.js",
   "./icons/icon-192.png",
   "./icons/icon-512.png",

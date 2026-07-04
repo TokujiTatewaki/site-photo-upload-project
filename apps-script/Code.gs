@@ -35,6 +35,8 @@
  *    「デプロイ」→「デプロイを管理」→ 編集(鉛筆アイコン) →
  *    「バージョン：新バージョン」を選んで「デプロイ」を押すことで反映される
  *    （URLは変わらないので、アプリ側の再設定は不要）。
+ *    ※ doGet追加時など、このファイルを更新した場合は必ずこの手順で
+ *      「新バージョン」を発行し直すこと（コード保存だけでは公開URLに反映されない）。
  *
  * 【セキュリティについて】
  * このウェブアプリは「全員」がアクセスできる設定になるため、URLを知っていれば
@@ -48,10 +50,29 @@ const SHARED_SECRET = "ここを推測されにくいランダムな文字列に
 const ADMIN_EMAIL = "tokuji.tatewaki@gmail.com";
 // ▲▲▲ ここまで ▲▲▲
 
+// 補足：GAS の Web アプリはリクエストを内部的に script.googleusercontent.com へ
+// 302リダイレクトする。その際、POSTでリクエストしても多くの環境（fetch()等）では
+// 仕様上リダイレクト先へはGETとして送り直されてしまい、doPostではなくdoGetが
+// 呼ばれてbody(JSON)が失われて失敗する（実行ログに「doGet」「失敗しました」と出る
+// 場合はこれが原因）。これを避けるため、クライアント側(js/notify.js)は最初から
+// GETリクエスト（クエリパラメータ）で送信する方式にしている。
+// doPostは万一POSTで呼ばれた場合のために残してあるが、通常はdoGetのみが使われる。
+
+function doGet(e) {
+  return handleNotifyRequest(e.parameter || {});
+}
+
 function doPost(e) {
   try {
     const data = JSON.parse(e.postData.contents);
+    return handleNotifyRequest(data);
+  } catch (err) {
+    return jsonResponse({ ok: false, error: String(err) });
+  }
+}
 
+function handleNotifyRequest(data) {
+  try {
     if (!data || data.secret !== SHARED_SECRET) {
       return jsonResponse({ ok: false, error: "unauthorized" });
     }

@@ -10,15 +10,18 @@ const Notify = (() => {
   async function sendUploadNotification(payload) {
     if (!CONFIG.NOTIFY_WEBAPP_URL) return;
     try {
-      // 補足：Google Apps ScriptのウェブアプリはCORSのプリフライト(OPTIONSリクエスト)を
-      // 正しく処理できないため、Content-Typeをtext/plainにしてプリフライトを発生させずに送る。
-      // Apps Script側では e.postData.contents をJSON.parse()して受け取る。
-      await fetch(CONFIG.NOTIFY_WEBAPP_URL, {
-        method: "POST",
-        headers: { "Content-Type": "text/plain;charset=utf-8" },
-        body: JSON.stringify(
-          Object.assign({ secret: CONFIG.NOTIFY_SHARED_SECRET }, payload)
-        ),
+      // 補足：Google Apps ScriptのウェブアプリはリクエストをGoogle内部の
+      // 別ドメインへ302リダイレクトする仕様になっており、その際POSTで送っても
+      // リダイレクト先へはGETとして送り直されてしまう（＝bodyが失われ、
+      // doPostではなくdoGetが呼ばれて失敗する）。この問題を避けるため、
+      // 最初からGETリクエスト（クエリパラメータ）で送信する。
+      // クエリパラメータのみの単純なGETリクエストなのでCORSプリフライトも発生しない。
+      // Apps Script側では doGet(e) の e.parameter で受け取る。
+      const params = new URLSearchParams(
+        Object.assign({ secret: CONFIG.NOTIFY_SHARED_SECRET }, payload)
+      );
+      await fetch(`${CONFIG.NOTIFY_WEBAPP_URL}?${params.toString()}`, {
+        method: "GET",
       });
     } catch (e) {
       console.warn("完了通知メールの送信に失敗しました（アップロード自体は正常です）", e);
