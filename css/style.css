@@ -175,6 +175,15 @@ input[type="file"] {
   color: #5f6368;
 }
 
+.retry-all-btn {
+  display: block;
+  margin: 0 12px 12px;
+  width: calc(100% - 24px);
+}
+.retry-all-btn:disabled {
+  opacity: 0.6;
+}
+
 .history-row {
   background: #fff;
   margin: 0 12px 8px;

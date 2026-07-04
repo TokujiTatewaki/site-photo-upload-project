@@ -560,21 +560,23 @@ async function renderHistory() {
       </div>
       <div class="history-sub">${escapeHtml(item.customer)} / ${escapeHtml(item.site)} / ${formatYearMonth(item.yearMonth)}</div>
     `;
-    // 中断時、実際にアップロード中だった1件は"paused"になるが、
-    // まだ順番が来ていなかった（中断でループが止まった）残りの分は"pending"のまま
-    // 履歴に残る。"completed"以外はすべて再試行できるようにする。
-    if (item.status !== "completed") {
-      const btn = document.createElement("button");
-      btn.textContent = "再試行";
-      btn.onclick = async () => {
-        btn.disabled = true;
-        await uploadSingleItem(item);
-        await renderHistory();
-      };
-      row.appendChild(btn);
-    }
     localEl.appendChild(row);
   });
+
+  // 中断時、実際にアップロード中だった1件は"paused"になるが、
+  // まだ順番が来ていなかった（中断でループが止まった）残りの分は"pending"のまま
+  // 履歴に残る。ファイルごとに個別の再試行ボタンを出すと複数残った際に
+  // 1つずつ押す必要があり手間なので、"completed"以外が1件でもあれば
+  // まとめて全数を再試行できるボタンを1つだけ表示する。
+  const resumableCount = localItems.filter((i) => i.status !== "completed").length;
+  const retryAllBtn = $("#btn-retry-all");
+  if (resumableCount > 0) {
+    retryAllBtn.textContent = `未完了の${resumableCount}件をまとめて再試行`;
+    retryAllBtn.classList.remove("hidden");
+    retryAllBtn.disabled = false;
+  } else {
+    retryAllBtn.classList.add("hidden");
+  }
 
   const sharedEl = $("#shared-history-list");
   sharedEl.innerHTML = "読み込み中...";
@@ -687,6 +689,13 @@ async function init() {
   $("#btn-upload-close").addEventListener("click", () => {
     closeUploadModal();
     resetSelectionForNextUpload();
+  });
+
+  $("#btn-retry-all").addEventListener("click", async () => {
+    $("#btn-retry-all").disabled = true;
+    setStatusMessage("未完了ファイルをまとめて再試行しています...");
+    await retryPendingUploads();
+    setStatusMessage("");
   });
 
   $("#tab-main").addEventListener("click", () => {
