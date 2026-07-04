@@ -67,7 +67,7 @@ function renderCustomerOptions() {
 
   const newOpt = document.createElement("option");
   newOpt.value = NEW_VALUE;
-  newOpt.textContent = "その他（新規作成）";
+  newOpt.textContent = "その他（新規登録）";
   sel.appendChild(newOpt);
 
   sel.value = state.selectedCustomerId || "";
@@ -94,7 +94,7 @@ function renderSiteOptions() {
 
   const newOpt = document.createElement("option");
   newOpt.value = NEW_VALUE;
-  newOpt.textContent = "その他（新規作成）";
+  newOpt.textContent = "その他（新規登録）";
   sel.appendChild(newOpt);
 
   sel.disabled = !state.selectedCustomerId;
@@ -119,7 +119,7 @@ function renderYearMonthOptions() {
 
   const newOpt = document.createElement("option");
   newOpt.value = NEW_VALUE;
-  newOpt.textContent = "その他（新規作成）";
+  newOpt.textContent = "その他（新規登録）";
   sel.appendChild(newOpt);
 
   sel.value = state.selectedYearMonth || "";
@@ -128,6 +128,24 @@ function renderYearMonthOptions() {
 function formatYearMonth(ym) {
   if (!/^\d{6}$/.test(ym)) return ym;
   return `${ym.slice(0, 4)}年${ym.slice(4, 6)}月`;
+}
+
+// 現在の年月を"YYYYMM"形式で返す
+function getCurrentYearMonth() {
+  const now = new Date();
+  return `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, "0")}`;
+}
+
+// ③施工年月の初期選択として現在の年月を使う。マスタデータに無ければ仮登録する。
+async function applyDefaultYearMonth() {
+  const currentYm = getCurrentYearMonth();
+  if (!state.masterData.yearMonths.includes(currentYm)) {
+    state.masterData.yearMonths.push(currentYm);
+    await persistMasterData();
+  }
+  state.selectedYearMonth = currentYm;
+  renderYearMonthOptions();
+  updateUploadButtonState();
 }
 
 async function loadMasterDataAndRender() {
@@ -142,7 +160,7 @@ async function loadMasterDataAndRender() {
   }
   renderCustomerOptions();
   renderSiteOptions();
-  renderYearMonthOptions();
+  await applyDefaultYearMonth();
 }
 
 // ---------------- 新規作成モーダル ----------------
@@ -232,6 +250,7 @@ async function confirmModal() {
       state.selectedYearMonth = value;
       renderYearMonthOptions();
     }
+    updateUploadButtonState();
     closeModal();
   } catch (e) {
     alert("新規項目の保存に失敗しました: " + e.message);
@@ -257,6 +276,21 @@ function updateSelectedFilesInfo() {
   } else {
     info.textContent = `${state.selectedFiles.length} 件の写真を選択中`;
   }
+}
+
+// ①②③と写真選択がすべて揃うまでは、アップロード実行ボタンを見た目上disabledにする。
+// ただし実際のdisabled属性は付けない（ボタン自体は押せる状態のままにする）ことで、
+// 準備が整う前に間違って押した場合は従来通り「xxしてください」という案内が出るようにする。
+function updateUploadButtonState() {
+  const ready =
+    !!state.selectedCustomerId &&
+    state.selectedCustomerId !== NEW_VALUE &&
+    !!state.selectedSiteId &&
+    state.selectedSiteId !== NEW_VALUE &&
+    !!state.selectedYearMonth &&
+    state.selectedYearMonth !== NEW_VALUE &&
+    state.selectedFiles.length > 0;
+  $("#btn-upload").classList.toggle("look-disabled", !ready);
 }
 
 function formatBytes(bytes) {
@@ -312,13 +346,14 @@ function setUploadCurrentProgress(fileName, uploaded, total) {
 }
 
 // リセットして最初から作業できるようにする（アップロード完了後、閉じるボタン押下時に使用）
-function resetSelectionForNextUpload() {
+// ③施工年月は空欄に戻さず、現在の年月を初期選択として再設定する
+async function resetSelectionForNextUpload() {
   state.selectedCustomerId = "";
   state.selectedSiteId = "";
-  state.selectedYearMonth = "";
   renderCustomerOptions();
   renderSiteOptions();
-  renderYearMonthOptions();
+  await applyDefaultYearMonth();
+  updateUploadButtonState();
 }
 
 // onProgress(uploaded, total) はアップロード中の進捗コールバック（省略可）
@@ -510,6 +545,7 @@ async function startUpload() {
     state.selectedFiles = [];
     $("#file-input").value = "";
     updateSelectedFilesInfo();
+    updateUploadButtonState();
   } catch (e) {
     setUploadModalMode("done");
     setUploadStageMessage("");
@@ -796,6 +832,7 @@ async function init() {
     state.selectedCustomerId = e.target.value;
     state.selectedSiteId = "";
     renderSiteOptions();
+    updateUploadButtonState();
   });
 
   $("#select-site").addEventListener("change", (e) => {
@@ -805,6 +842,7 @@ async function init() {
       return;
     }
     state.selectedSiteId = e.target.value;
+    updateUploadButtonState();
   });
 
   $("#select-yearmonth").addEventListener("change", (e) => {
@@ -814,6 +852,7 @@ async function init() {
       return;
     }
     state.selectedYearMonth = e.target.value;
+    updateUploadButtonState();
   });
 
   $("#modal-confirm").addEventListener("click", confirmModal);
@@ -822,6 +861,7 @@ async function init() {
   $("#file-input").addEventListener("change", (e) => {
     state.selectedFiles = Array.from(e.target.files || []);
     updateSelectedFilesInfo();
+    updateUploadButtonState();
   });
 
   $("#btn-upload").addEventListener("click", startUpload);
@@ -833,14 +873,21 @@ async function init() {
     $("#btn-upload-cancel").disabled = true;
   });
 
-  $("#btn-upload-close").addEventListener("click", () => {
+  $("#btn-upload-close").addEventListener("click", async () => {
     closeUploadModal();
-    resetSelectionForNextUpload();
+    await resetSelectionForNextUpload();
   });
 
   $("#btn-retry-all").addEventListener("click", () => {
     $("#btn-retry-all").disabled = true;
     retryAllUploads();
+  });
+
+  $("#btn-settings").addEventListener("click", () => {
+    $("#settings-modal-overlay").classList.remove("hidden");
+  });
+  $("#btn-settings-close").addEventListener("click", () => {
+    $("#settings-modal-overlay").classList.add("hidden");
   });
 
   $("#tab-main").addEventListener("click", () => {
@@ -860,6 +907,8 @@ async function init() {
   if ("serviceWorker" in navigator) {
     navigator.serviceWorker.register("sw.js").catch((e) => console.warn("SW登録失敗", e));
   }
+
+  updateUploadButtonState();
 
   // 補足：Google Identity Services（OAuthトークンモデル）は仕様上、
   // ユーザー操作（クリック等のジェスチャー）を伴わないトークン取得を認めていない。

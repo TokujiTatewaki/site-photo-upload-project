@@ -9,6 +9,9 @@ body {
 }
 
 .app-header {
+  position: sticky;
+  top: 0;
+  z-index: 100;
   background: #1a73e8;
   color: #fff;
   padding: 16px;
@@ -21,6 +24,20 @@ body {
   margin-top: 2px;
   font-size: 11px;
   opacity: 0.85;
+}
+.settings-btn {
+  position: absolute;
+  top: 12px;
+  right: 14px;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  border: none;
+  background: rgba(255, 255, 255, 0.18);
+  color: #fff;
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
 }
 
 .status-message {
@@ -73,6 +90,25 @@ input[type="file"] {
   width: 100%;
   padding: 8px 0;
 }
+input[type="file"]::file-selector-button,
+input[type="file"]::-webkit-file-upload-button {
+  padding: 12px 20px;
+  margin-right: 10px;
+  font-size: 16px;
+  font-weight: bold;
+  color: #fff;
+  background: #1a73e8;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.step-title {
+  margin: 0 0 12px;
+  font-size: 15px;
+  font-weight: bold;
+  color: #202124;
+}
 
 .muted {
   font-size: 13px;
@@ -92,8 +128,10 @@ input[type="file"] {
   font-size: 16px;
   font-weight: bold;
 }
-.btn-primary:disabled {
+.btn-primary:disabled,
+.btn-primary.look-disabled {
   background: #a8c7fa;
+  cursor: not-allowed;
 }
 
 .btn-secondary {

@@ -15,6 +15,7 @@
 <header class="app-header">
   <h1>現場写真アップロード</h1>
   <div id="app-version" class="app-version"></div>
+  <button id="btn-settings" class="settings-btn" type="button" aria-label="設定">⚙</button>
 </header>
 
 <div id="status-message" class="status-message"></div>
@@ -36,6 +37,7 @@
 
   <div id="panel-main" class="panel">
     <div class="card">
+      <h3 class="step-title">STEP1：写真の保存先を決める</h3>
       <label>① 顧客名</label>
       <select id="select-customer"></select>
 
@@ -47,7 +49,7 @@
     </div>
 
     <div class="card">
-      <label>写真を選択</label>
+      <h3 class="step-title">STEP2：保存する写真を選ぶ</h3>
       <input id="file-input" type="file" accept="image/*,.heic,.heif" multiple />
       <div id="selected-files-info" class="muted">写真が選択されていません</div>
     </div>
@@ -56,7 +58,7 @@
   </div>
 
   <div id="panel-history" class="panel hidden">
-    <h2>本日分の履歴(本日)</h2>
+    <h2>この端末の履歴(本日分)</h2>
     <button id="btn-retry-all" class="btn-secondary retry-all-btn hidden"></button>
     <div id="local-history-list"></div>
 
@@ -111,6 +113,19 @@
     <div class="modal-buttons">
       <button id="btn-upload-cancel" class="btn-secondary">中断</button>
       <button id="btn-upload-close" class="btn-primary hidden">閉じる</button>
+    </div>
+  </div>
+</div>
+
+<!-- 設定モーダル（ダミー。設定機能は未実装） -->
+<div id="settings-modal-overlay" class="modal-overlay hidden">
+  <div class="modal">
+    <h3>設定</h3>
+    <p>ダミー設定1</p>
+    <p>ダミー設定2</p>
+    <p>ダミー設定3</p>
+    <div class="modal-buttons">
+      <button id="btn-settings-close" class="btn-primary">閉じる</button>
     </div>
   </div>
 </div>
