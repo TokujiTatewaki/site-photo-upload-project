@@ -1,0 +1,64 @@
+# GitHub Pages へのデプロイ用ワークフロー。
+#
+# 【なぜこの方式か】
+# 本アプリはビルド不要の静的サイトだが、アップロード完了通知メール機能の
+# ためだけに、Google Apps ScriptのWebアプリURLと簡易な合言葉(共有シークレット)
+# を js/config.js に埋め込む必要がある。これらの値をソースコードに直接コミット
+# すると、Publicリポジトリでは誰でも閲覧・検索できてしまう。
+# そこで、実際の値はコミットせず「空文字のプレースホルダー」のままにし、
+# デプロイのたびにこのワークフローがリポジトリの Secrets から値を読み取って
+# 差し込んでから公開する。これにより、GitHub上のソースコード・コミット履歴には
+# 実際の値が一切残らない。
+#
+# 【事前準備（初回のみ、手動でGitHubの画面から行う）】
+# 1. このリポジトリの Settings → Secrets and variables → Actions →
+#    "New repository secret" から、以下の2つを登録する。
+#      NOTIFY_WEBAPP_URL      … Apps Scriptをデプロイして得たWebアプリURL
+#      NOTIFY_SHARED_SECRET   … Apps Script側の SHARED_SECRET と同じ文字列
+# 2. Settings → Pages → Build and deployment → Source を
+#    「GitHub Actions」に変更する（「Deploy from a branch」からの切り替え）。
+# 3. あとは main ブランチへの push のたびに自動でデプロイされる。
+
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches: ["main"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Inject notification secrets into js/config.js（コミットはしない、実行環境上のみ）
+        env:
+          NOTIFY_WEBAPP_URL: ${{ secrets.NOTIFY_WEBAPP_URL }}
+          NOTIFY_SHARED_SECRET: ${{ secrets.NOTIFY_SHARED_SECRET }}
+        run: node scripts/inject-config.js
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: "."
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
