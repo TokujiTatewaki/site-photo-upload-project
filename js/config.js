@@ -46,4 +46,9 @@ const CONFIG = {
   // 管理者宛先(ADMIN_EMAIL)はApps Script側で管理する（変更してもこのアプリの再デプロイ不要）。
   NOTIFY_WEBAPP_URL: "",
   NOTIFY_SHARED_SECRET: "",
+
+  // 通知メールに埋め込むサムネイル画像の最大枚数
+  // （多すぎるとメールが肥大化する・GETリクエストのURLが長くなりすぎるための上限。
+  //   実際の完了件数はphotoCountとして別途送るので、超過分は「ほかN件」として案内される）
+  NOTIFY_MAX_INLINE_PHOTOS: 10,
 };

@@ -161,6 +161,11 @@ function formatYearMonth(ym) {
   return `${ym.slice(0, 4)}年${ym.slice(4, 6)}月`;
 }
 
+// 完了通知メールに載せる、保存先Googleドライブフォルダへのリンク
+function buildDriveFolderUrl(folderId) {
+  return "https://drive.google.com/drive/folders/" + folderId;
+}
+
 // 現在の年月を"YYYYMM"形式で返す
 function getCurrentYearMonth() {
   const now = new Date();
@@ -557,6 +562,11 @@ async function startUpload() {
       (r) => r.result.status === "failed" || r.result.status === "paused"
     ).length;
     const successCount = results.filter((r) => r.result.status === "completed").length;
+    // 通知メールにサムネイル画像を埋め込むため、完了したファイルのDriveファイルIDを集める
+    // （多すぎるとメールが肥大化するため、上限件数だけ送る。全件数はphotoCountで別途伝える）
+    const uploadedFileIds = results
+      .filter((r) => r.result.status === "completed" && r.result.driveFileId)
+      .map((r) => r.result.driveFileId);
 
     setUploadModalMode("done");
     setUploadStageMessage("");
@@ -587,6 +597,11 @@ async function startUpload() {
       successCount,
       totalCount: items.length,
       timestamp: new Date().toISOString(),
+      folderUrl: buildDriveFolderUrl(folderId),
+      photoFileIdsJson: JSON.stringify(
+        uploadedFileIds.slice(0, CONFIG.NOTIFY_MAX_INLINE_PHOTOS)
+      ),
+      photoCount: uploadedFileIds.length,
     });
 
     state.selectedFiles = [];
@@ -643,6 +658,8 @@ async function retryAllUploads() {
   let cancelledMidway = false;
   let failedCount = 0;
   let successCount = 0;
+  // 通知メールの「保存先リンク」「サムネイル画像」に使うため、完了したファイルを控えておく
+  const completedItems = [];
 
   setUploadOverallProgress(0, totalBytesAll, 0, items.length);
   setUploadCurrentProgress("-", 0, 1);
@@ -676,6 +693,7 @@ async function retryAllUploads() {
       }
       if (result.status === "completed") {
         successCount++;
+        completedItems.push({ item, driveFileId: result.driveFileId });
       } else {
         failedCount++;
       }
@@ -704,6 +722,21 @@ async function retryAllUploads() {
     const groups = Array.from(
       new Set(items.map((i) => `${i.customer} / ${i.site} (${formatYearMonth(i.yearMonth)})`))
     );
+    // 保存先フォルダへのリンクは、完了したファイルのフォルダのみ（重複除去）を対象にする
+    const folderGroups = Array.from(
+      new Map(
+        completedItems.map(({ item }) => [
+          item.folderId,
+          {
+            label: `${item.customer} / ${item.site} (${formatYearMonth(item.yearMonth)})`,
+            url: buildDriveFolderUrl(item.folderId),
+          },
+        ])
+      ).values()
+    );
+    const uploadedFileIds = completedItems
+      .map((c) => c.driveFileId)
+      .filter(Boolean);
     Notify.sendUploadNotification({
       event: cancelledMidway ? "cancelled" : failedCount === 0 ? "completed" : "partial_failed",
       customer: "まとめて再試行",
@@ -715,6 +748,11 @@ async function retryAllUploads() {
       successCount,
       totalCount: items.length,
       timestamp: new Date().toISOString(),
+      folderLinksJson: JSON.stringify(folderGroups),
+      photoFileIdsJson: JSON.stringify(
+        uploadedFileIds.slice(0, CONFIG.NOTIFY_MAX_INLINE_PHOTOS)
+      ),
+      photoCount: uploadedFileIds.length,
     });
   } catch (e) {
     setUploadModalMode("done");

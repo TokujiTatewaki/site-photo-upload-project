@@ -50,6 +50,11 @@ const SHARED_SECRET = "ここを推測されにくいランダムな文字列に
 const ADMIN_EMAIL = "tokuji.tatewaki@gmail.com";
 // ▲▲▲ ここまで ▲▲▲
 
+// メールに埋め込むサムネイル画像の最大枚数（メール肥大化防止のための安全上限。
+// アプリ側(js/config.js の NOTIFY_MAX_INLINE_PHOTOS)でも同様に上限を設けて
+// 送信するファイルID数を絞っているが、念のためサーバー側でも二重に制限する）
+const MAX_INLINE_PHOTOS = 10;
+
 // 補足：GAS の Web アプリはリクエストを内部的に script.googleusercontent.com へ
 // 302リダイレクトする。その際、POSTでリクエストしても多くの環境（fetch()等）では
 // 仕様上リダイレクト先へはGETとして送り直されてしまい、doPostではなくdoGetが
@@ -77,8 +82,11 @@ function handleNotifyRequest(data) {
       return jsonResponse({ ok: false, error: "unauthorized" });
     }
 
+    const photos = fetchInlinePhotos(data);
+
     const subject = buildSubject(data);
     const body = buildBody(data);
+    const htmlBody = buildHtmlBody(data, photos.htmlParts);
 
     const recipients = [ADMIN_EMAIL];
     if (data.uploaderEmail) {
@@ -87,16 +95,124 @@ function handleNotifyRequest(data) {
     // 重複があれば1通にまとめる
     const uniqueRecipients = Array.from(new Set(recipients)).join(",");
 
-    MailApp.sendEmail({
+    const mailOptions = {
       to: uniqueRecipients,
       subject: subject,
       body: body,
-    });
+      htmlBody: htmlBody,
+    };
+    if (Object.keys(photos.inlineImages).length > 0) {
+      mailOptions.inlineImages = photos.inlineImages;
+    }
+    MailApp.sendEmail(mailOptions);
 
     return jsonResponse({ ok: true });
   } catch (err) {
     return jsonResponse({ ok: false, error: String(err) });
   }
+}
+
+// data.photoFileIdsJson（アップロード済みDriveファイルIDのJSON配列文字列）から、
+// 各ファイルのDrive生成サムネイルを取得し、メール本文に埋め込むための
+// inlineImages（cid指定用のBlobマップ）とHTML断片を組み立てる。
+// 個々の画像取得に失敗しても、その画像だけスキップしてメール送信自体は継続する。
+function fetchInlinePhotos(data) {
+  const inlineImages = {};
+  const htmlParts = [];
+
+  let fileIds = [];
+  if (data.photoFileIdsJson) {
+    try {
+      const parsed = JSON.parse(data.photoFileIdsJson);
+      if (Array.isArray(parsed)) {
+        fileIds = parsed;
+      }
+    } catch (e) {
+      // 不正なJSONは無視する（画像なしでメール送信を続ける）
+    }
+  }
+  fileIds = fileIds.slice(0, MAX_INLINE_PHOTOS);
+
+  if (fileIds.length === 0) {
+    return { inlineImages, htmlParts };
+  }
+
+  // アップロード直後はDrive側のサムネイル生成が間に合っていないことがあるため、
+  // 少し待ってから取得する（完全な対策ではないが簡易的な緩和策）。
+  Utilities.sleep(2000);
+
+  fileIds.forEach(function (fileId, idx) {
+    try {
+      const file = DriveApp.getFileById(fileId);
+      const thumb = file.getThumbnail();
+      if (thumb) {
+        const cid = "photo" + idx;
+        inlineImages[cid] = thumb;
+        htmlParts.push(
+          '<img src="cid:' +
+            cid +
+            '" alt="" style="max-width:220px;max-height:220px;margin:4px;border-radius:6px;border:1px solid #ddd;" />'
+        );
+      }
+    } catch (e) {
+      // 個別の画像取得失敗は無視する（サムネイル未生成・アクセス不可等）
+    }
+  });
+
+  return { inlineImages, htmlParts };
+}
+
+// data.folderUrl（単一フォルダ）/ data.folderLinksJson（複数フォルダのJSON配列）から
+// 保存先フォルダへのリンク行を、プレーンテキスト用・HTML用それぞれ組み立てる。
+function buildFolderLines(data) {
+  const plainLines = [];
+  const htmlLines = [];
+
+  if (data.folderUrl) {
+    plainLines.push(`保存先　　：${data.folderUrl}`);
+    htmlLines.push(
+      '<p>保存先：<a href="' +
+        escapeHtml(data.folderUrl) +
+        '">Googleドライブでフォルダを開く</a></p>'
+    );
+  }
+
+  if (data.folderLinksJson) {
+    try {
+      const folders = JSON.parse(data.folderLinksJson);
+      if (Array.isArray(folders) && folders.length > 0) {
+        plainLines.push("保存先一覧：");
+        folders.forEach(function (f) {
+          plainLines.push(`　- ${f.label}：${f.url}`);
+        });
+        htmlLines.push(
+          "<p>保存先一覧：</p><ul>" +
+            folders
+              .map(function (f) {
+                return (
+                  '<li><a href="' +
+                  escapeHtml(f.url) +
+                  '">' +
+                  escapeHtml(f.label) +
+                  "</a></li>"
+                );
+              })
+              .join("") +
+            "</ul>"
+        );
+      }
+    } catch (e) {
+      // 不正なJSONは無視する
+    }
+  }
+
+  return { plainLines, htmlLines };
+}
+
+function escapeHtml(str) {
+  return String(str || "").replace(/[&<>"']/g, function (c) {
+    return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+  });
 }
 
 function buildSubject(data) {
@@ -132,7 +248,66 @@ function buildBody(data) {
   if (data.note) {
     lines.push("", `対象　　　：${data.note}`);
   }
+
+  const folderInfo = buildFolderLines(data);
+  if (folderInfo.plainLines.length > 0) {
+    lines.push("", folderInfo.plainLines.join("\n"));
+  }
+
   return lines.join("\n");
+}
+
+// HTMLメール本文を組み立てる。photoHtmlPartsは埋め込み済みサムネイル画像の<img>タグ配列。
+function buildHtmlBody(data, photoHtmlParts) {
+  const statusLabel =
+    {
+      completed: "全てのファイルが正常にアップロードされました。",
+      cancelled: "アップロードが中断されました。",
+      partial_failed: "一部のファイルが未完了です。",
+    }[data.event] || data.event;
+
+  function row(label, value) {
+    return (
+      '<tr><td style="padding:2px 8px;color:#666;white-space:nowrap;">' +
+      escapeHtml(label) +
+      '</td><td style="padding:2px 8px;">' +
+      escapeHtml(value) +
+      "</td></tr>"
+    );
+  }
+
+  let html = "<p>" + escapeHtml(statusLabel) + "</p>";
+  html += '<table style="border-collapse:collapse;font-size:13px;">';
+  html += row("顧客名", data.customer || "-");
+  html += row("施工現場", data.site || "-");
+  html += row("施工年月", data.yearMonth || "-");
+  html += row("作業者", `${data.uploaderName || "-"}（${data.uploaderEmail || "-"}）`);
+  html += row(
+    "件数",
+    `完了 ${data.successCount != null ? data.successCount : "-"} / 全体 ${data.totalCount != null ? data.totalCount : "-"}`
+  );
+  html += row("日時", data.timestamp || new Date().toISOString());
+  html += "</table>";
+
+  if (data.note) {
+    html += "<p>対象：" + escapeHtml(data.note) + "</p>";
+  }
+
+  const folderInfo = buildFolderLines(data);
+  html += folderInfo.htmlLines.join("");
+
+  if (photoHtmlParts && photoHtmlParts.length > 0) {
+    html += "<div>" + photoHtmlParts.join("") + "</div>";
+    const totalPhotoCount = Number(data.photoCount) || photoHtmlParts.length;
+    if (totalPhotoCount > photoHtmlParts.length) {
+      html +=
+        '<p style="color:#888;font-size:12px;">ほか' +
+        (totalPhotoCount - photoHtmlParts.length) +
+        "件（メールには一部のみ表示。全件はGoogleドライブでご確認ください）</p>";
+    }
+  }
+
+  return html;
 }
 
 function jsonResponse(obj) {
