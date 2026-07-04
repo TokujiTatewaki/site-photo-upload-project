@@ -1,11 +1,22 @@
 // ============================================================
 // IndexedDB ラッパー
-// - uploads: アップロードキュー兼ローカル履歴（写真Blob、進捗、ステータスを保持）
+// - uploads: アップロードキュー兼ローカル履歴のメタデータ（写真Blobは含まない）
+// - uploadBlobs: 写真Blob本体（uploadsとは別ストアに分離）
 // - masterCache: マスタデータ（顧客名/施工現場/施工年月）のローカルキャッシュ
+//
+// 補足：以前はuploadsストアの1レコードにBlobも一緒に保存していたが、
+// 「IndexedDBから取り出したBlobを、進捗更新のたびに同じレコードへ
+// 再度put()し直す」実装だったため、iOS Safari特有の
+// "Error preparing Blob/File data to be stored in object store" という
+// 不具合（IndexedDBから読み出したBlobの再保存に失敗する既知の挙動）を誘発し、
+// 中断からの再試行時に画面が無反応になったりエラーになったりする原因となっていた。
+// Blobを別ストアに分離し、Blobは追加時に一度だけ書き込み、以降は読み出し専用にすることで
+// この再保存（roundtrip）を無くし、不具合を回避する。
 // ============================================================
 const DB_NAME = "site-photo-upload-db";
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 const STORE_UPLOADS = "uploads";
+const STORE_BLOBS = "uploadBlobs";
 const STORE_MASTER = "masterCache";
 
 function openDB() {
@@ -13,13 +24,42 @@ function openDB() {
     const req = indexedDB.open(DB_NAME, DB_VERSION);
     req.onupgradeneeded = (event) => {
       const db = event.target.result;
+      const upgradeTx = event.target.transaction;
+
+      let uploadsStore;
       if (!db.objectStoreNames.contains(STORE_UPLOADS)) {
-        const store = db.createObjectStore(STORE_UPLOADS, { keyPath: "id" });
-        store.createIndex("status", "status", { unique: false });
-        store.createIndex("createdAt", "createdAt", { unique: false });
+        uploadsStore = db.createObjectStore(STORE_UPLOADS, { keyPath: "id" });
+        uploadsStore.createIndex("status", "status", { unique: false });
+        uploadsStore.createIndex("createdAt", "createdAt", { unique: false });
+      } else {
+        uploadsStore = upgradeTx.objectStore(STORE_UPLOADS);
       }
+
+      if (!db.objectStoreNames.contains(STORE_BLOBS)) {
+        db.createObjectStore(STORE_BLOBS, { keyPath: "id" });
+      }
+
       if (!db.objectStoreNames.contains(STORE_MASTER)) {
         db.createObjectStore(STORE_MASTER, { keyPath: "key" });
+      }
+
+      // v1（旧バージョン）ではuploadsレコードにBlobを直接保存していたため、
+      // 新設のuploadBlobsストアへ移行し、uploadsレコードからはBlobを取り除く。
+      if (event.oldVersion < 2) {
+        const blobsStore = upgradeTx.objectStore(STORE_BLOBS);
+        const cursorReq = uploadsStore.openCursor();
+        cursorReq.onsuccess = (e) => {
+          const cursor = e.target.result;
+          if (!cursor) return;
+          const record = cursor.value;
+          if (record.blob) {
+            blobsStore.put({ id: record.id, blob: record.blob });
+            const rest = Object.assign({}, record);
+            delete rest.blob;
+            cursor.update(rest);
+          }
+          cursor.continue();
+        };
       }
     };
     req.onsuccess = () => resolve(req.result);
@@ -40,16 +80,31 @@ function tx(storeName, mode) {
 }
 
 const DB = {
-  // ---- uploads ----
+  // ---- uploads（メタデータ） ----
   async addUploadItem(item) {
-    const store = await tx(STORE_UPLOADS, "readwrite");
-    return new Promise((resolve, reject) => {
-      const req = store.add(item);
-      req.onsuccess = () => resolve(item);
+    const rest = Object.assign({}, item);
+    const blob = rest.blob;
+    delete rest.blob;
+
+    const metaStore = await tx(STORE_UPLOADS, "readwrite");
+    await new Promise((resolve, reject) => {
+      const req = metaStore.add(rest);
+      req.onsuccess = () => resolve();
       req.onerror = () => reject(req.error);
     });
+
+    if (blob) {
+      const blobStore = await tx(STORE_BLOBS, "readwrite");
+      await new Promise((resolve, reject) => {
+        const req = blobStore.put({ id: item.id, blob });
+        req.onsuccess = () => resolve();
+        req.onerror = () => reject(req.error);
+      });
+    }
+    return item;
   },
 
+  // 注意：changesにblobを含めないこと（Blobは別ストアで管理し、ここでは触らない）
   async updateUploadItem(id, changes) {
     const store = await tx(STORE_UPLOADS, "readwrite");
     return new Promise((resolve, reject) => {
@@ -71,15 +126,28 @@ const DB = {
     });
   },
 
-  async getUploadItem(id) {
-    const store = await tx(STORE_UPLOADS, "readonly");
+  async getUploadItemBlob(id) {
+    const store = await tx(STORE_BLOBS, "readonly");
     return new Promise((resolve, reject) => {
       const req = store.get(id);
-      req.onsuccess = () => resolve(req.result || null);
+      req.onsuccess = () => resolve(req.result ? req.result.blob : null);
       req.onerror = () => reject(req.error);
     });
   },
 
+  async getUploadItem(id) {
+    const store = await tx(STORE_UPLOADS, "readonly");
+    const meta = await new Promise((resolve, reject) => {
+      const req = store.get(id);
+      req.onsuccess = () => resolve(req.result || null);
+      req.onerror = () => reject(req.error);
+    });
+    if (!meta) return null;
+    const blob = await DB.getUploadItemBlob(id);
+    return Object.assign({}, meta, { blob });
+  },
+
+  // 履歴一覧表示用。表示にBlobは不要なため、メタデータのみ返す（軽量化のため）
   async getAllUploadItems() {
     const store = await tx(STORE_UPLOADS, "readonly");
     return new Promise((resolve, reject) => {
@@ -93,16 +161,28 @@ const DB = {
     });
   },
 
+  // 再試行用。実際にアップロードし直すためBlobが必要なので、ここでのみ付与する
   async getResumableItems() {
-    const items = await DB.getAllUploadItems();
-    return items.filter(
+    const all = await DB.getAllUploadItems();
+    const resumable = all.filter(
       (i) => i.status === "pending" || i.status === "uploading" || i.status === "paused" || i.status === "failed"
+    );
+    return Promise.all(
+      resumable.map(async (item) => {
+        const blob = await DB.getUploadItemBlob(item.id);
+        return Object.assign({}, item, { blob });
+      })
     );
   },
 
-  // 完了後、容量節約のためBlob本体は破棄しメタデータのみ残す
+  // 完了後、容量節約のためBlob本体を削除する（uploadBlobsストアからのみ削除。メタデータには触れない）
   async dropBlob(id) {
-    return DB.updateUploadItem(id, { blob: null });
+    const store = await tx(STORE_BLOBS, "readwrite");
+    return new Promise((resolve, reject) => {
+      const req = store.delete(id);
+      req.onsuccess = () => resolve();
+      req.onerror = () => reject(req.error);
+    });
   },
 
   // ---- master cache ----
