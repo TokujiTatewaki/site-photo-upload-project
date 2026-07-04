@@ -122,16 +122,25 @@
   </div>
 </div>
 
-<!-- 設定画面（ダミー。設定機能は未実装）。下からスライドして表示するシート -->
+<!-- 設定画面。下からスライドして表示するシート -->
 <div id="screen-settings" class="settings-sheet">
   <div class="settings-sheet-header">
     <h2>設定</h2>
     <button id="btn-settings-close" class="icon-close-btn" type="button" aria-label="閉じる">&times;</button>
   </div>
   <div class="settings-sheet-body">
-    <p>ダミー設定1</p>
-    <p>ダミー設定2</p>
-    <p>ダミー設定3</p>
+    <div class="card">
+      <h3 class="step-title">ユーザー情報</h3>
+      <p class="muted">
+        履歴画面の共有履歴に表示される氏名です。アップロード完了メールの宛先にも使用されます。
+      </p>
+      <label>氏名</label>
+      <input id="profile-name-input" type="text" placeholder="例：山田太郎" />
+      <label>メールアドレス</label>
+      <input id="profile-email-input" type="email" placeholder="example@example.com" />
+      <button id="btn-profile-save" class="btn-primary">保存</button>
+      <div id="profile-save-message" class="muted hidden"></div>
+    </div>
   </div>
 </div>
 
@@ -141,6 +150,7 @@
 <script src="js/auth.js"></script>
 <script src="js/drive.js"></script>
 <script src="js/compress.js"></script>
+<script src="js/notify.js"></script>
 <script src="js/main.js"></script>
 </body>
 </html>

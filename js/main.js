@@ -23,8 +23,39 @@ function getDeviceId() {
   return id;
 }
 
+// ---------------- ユーザー情報（氏名・メールアドレス） ----------------
+// 端末のlocalStorageにのみ保存する（サーバー等には送らない。通知メール送信時のみ利用）。
+
+function getUserProfile() {
+  try {
+    const raw = localStorage.getItem("userProfile");
+    return raw ? JSON.parse(raw) : { name: "", email: "" };
+  } catch (e) {
+    return { name: "", email: "" };
+  }
+}
+
+function setUserProfile(profile) {
+  localStorage.setItem("userProfile", JSON.stringify(profile));
+}
+
+// 共有履歴に表示する名前。氏名が未設定の場合は、これまで通り端末IDで代替する。
+function getDisplayName() {
+  const profile = getUserProfile();
+  return profile.name && profile.name.trim() ? profile.name.trim() : getDeviceId();
+}
+
 function $(sel) {
   return document.querySelector(sel);
+}
+
+// 設定画面を開く際、現在保存されている氏名・メールアドレスをフォームに反映してから表示する。
+function openSettingsSheet() {
+  const profile = getUserProfile();
+  $("#profile-name-input").value = profile.name || "";
+  $("#profile-email-input").value = profile.email || "";
+  $("#profile-save-message").classList.add("hidden");
+  $("#screen-settings").classList.add("open");
 }
 
 function showScreen(name) {
@@ -456,7 +487,7 @@ async function startUpload() {
         customer: customerName,
         site: siteName,
         yearMonth,
-        device: getDeviceId(),
+        device: getDisplayName(),
         createdAt: new Date().toISOString(),
         thumbnailDataUrl: c.thumbnailDataUrl || null,
       };
@@ -525,6 +556,7 @@ async function startUpload() {
     const failedCount = results.filter(
       (r) => r.result.status === "failed" || r.result.status === "paused"
     ).length;
+    const successCount = results.filter((r) => r.result.status === "completed").length;
 
     setUploadModalMode("done");
     setUploadStageMessage("");
@@ -541,6 +573,21 @@ async function startUpload() {
         true
       );
     }
+
+    // 完了・中断・一部失敗のいずれの場合も通知メールを送る
+    // （NOTIFY_WEBAPP_URL未設定の場合はNotify側で何もしない）
+    const profile = getUserProfile();
+    Notify.sendUploadNotification({
+      event: cancelledMidway ? "cancelled" : failedCount === 0 ? "completed" : "partial_failed",
+      customer: customerName,
+      site: siteName,
+      yearMonth,
+      uploaderName: profile.name || "",
+      uploaderEmail: profile.email || "",
+      successCount,
+      totalCount: items.length,
+      timestamp: new Date().toISOString(),
+    });
 
     state.selectedFiles = [];
     $("#file-input").value = "";
@@ -595,6 +642,7 @@ async function retryAllUploads() {
   let completedBytesAll = 0;
   let cancelledMidway = false;
   let failedCount = 0;
+  let successCount = 0;
 
   setUploadOverallProgress(0, totalBytesAll, 0, items.length);
   setUploadCurrentProgress("-", 0, 1);
@@ -626,7 +674,11 @@ async function retryAllUploads() {
         cancelledMidway = true;
         break;
       }
-      if (result.status !== "completed") failedCount++;
+      if (result.status === "completed") {
+        successCount++;
+      } else {
+        failedCount++;
+      }
       completedBytesAll += item.totalBytes;
       setUploadOverallProgress(completedBytesAll, totalBytesAll, idx + 1, items.length);
     }
@@ -646,6 +698,24 @@ async function retryAllUploads() {
         true
       );
     }
+
+    // まとめて再試行は複数の顧客/現場が混在しうるため、対象の一覧を補足情報として送る
+    const profile = getUserProfile();
+    const groups = Array.from(
+      new Set(items.map((i) => `${i.customer} / ${i.site} (${formatYearMonth(i.yearMonth)})`))
+    );
+    Notify.sendUploadNotification({
+      event: cancelledMidway ? "cancelled" : failedCount === 0 ? "completed" : "partial_failed",
+      customer: "まとめて再試行",
+      site: "",
+      yearMonth: "",
+      note: groups.join("、"),
+      uploaderName: profile.name || "",
+      uploaderEmail: profile.email || "",
+      successCount,
+      totalCount: items.length,
+      timestamp: new Date().toISOString(),
+    });
   } catch (e) {
     setUploadModalMode("done");
     setUploadStageMessage("");
@@ -817,6 +887,12 @@ async function init() {
       showScreen("main");
       setStatusMessage("");
       retryPendingUploads();
+
+      // 初回起動などで氏名・メールアドレスが未設定の場合は、設定画面を自動で開いて入力を促す。
+      const profile = getUserProfile();
+      if (!profile.name && !profile.email) {
+        openSettingsSheet();
+      }
     } catch (e) {
       setStatusMessage("ログインに失敗しました: " + e.message, true);
       $("#btn-login").disabled = false;
@@ -884,10 +960,22 @@ async function init() {
   });
 
   $("#btn-settings").addEventListener("click", () => {
-    $("#screen-settings").classList.add("open");
+    openSettingsSheet();
   });
   $("#btn-settings-close").addEventListener("click", () => {
     $("#screen-settings").classList.remove("open");
+  });
+
+  $("#btn-profile-save").addEventListener("click", () => {
+    const name = $("#profile-name-input").value.trim();
+    const email = $("#profile-email-input").value.trim();
+    setUserProfile({ name, email });
+    const msgEl = $("#profile-save-message");
+    msgEl.textContent = "保存しました。";
+    msgEl.classList.remove("hidden");
+    setTimeout(() => {
+      msgEl.classList.add("hidden");
+    }, 2000);
   });
 
   $("#tab-main").addEventListener("click", () => {

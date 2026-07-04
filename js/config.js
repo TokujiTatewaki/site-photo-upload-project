@@ -37,4 +37,13 @@ const CONFIG = {
 
   // 同一フォルダ内のファイル名連番の桁数
   SEQUENCE_DIGITS: 3,
+
+  // アップロード完了通知メール（Google Apps Script経由で送信）
+  // NOTIFY_WEBAPP_URL: Apps Scriptを「ウェブアプリ」としてデプロイしたURL。
+  //   空欄のままなら通知機能自体を送信しない（未設定時は何もしない安全側の実装）。
+  // NOTIFY_SHARED_SECRET: Apps Script側のSHARED_SECRETと同じ文字列を設定すること
+  //   （第三者によるなりすまし送信を防ぐための簡易的な合言葉）。
+  // 管理者宛先(ADMIN_EMAIL)はApps Script側で管理する（変更してもこのアプリの再デプロイ不要）。
+  NOTIFY_WEBAPP_URL: "",
+  NOTIFY_SHARED_SECRET: "",
 };

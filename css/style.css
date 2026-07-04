@@ -137,6 +137,7 @@ label:first-child {
 
 select,
 input[type="text"],
+input[type="email"],
 input[type="month"] {
   width: 100%;
   padding: 10px;
