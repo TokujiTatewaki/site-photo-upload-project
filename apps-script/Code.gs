@@ -337,3 +337,42 @@ function jsonResponse(obj) {
     ContentService.MimeType.JSON
   );
 }
+
+// ============================================================
+// ▼一時的な調査用テスト関数（原因判明後に削除予定）
+// 使い方：
+// 1. Googleドライブの .email-thumbnails フォルダ内にある画像ファイルを開く
+// 2. ブラウザのURLが https://drive.google.com/file/d/【ここがファイルID】/view
+//    のようになっているので、【ここがファイルID】の部分をコピーする
+// 3. 下のTEST_FILE_IDにそのIDを貼り付けて保存
+// 4. このエディタ上部、実行ボタンの左にある関数選択プルダウンで
+//    「testFetchOneFile」を選び、実行ボタン（▶）を押す
+// 5. 初回は権限承認が求められるので許可する
+// 6. 実行完了後、下に出てくる「実行ログ」（または画面下部のログパネル）を確認する
+// ============================================================
+function testFetchOneFile() {
+  const TEST_FILE_ID = "ここに.email-thumbnails内の画像ファイルIDを貼り付け";
+
+  try {
+    Logger.log("=== ファイル情報の取得を試みます ===");
+    const file = DriveApp.getFileById(TEST_FILE_ID);
+    Logger.log("ファイル名: " + file.getName());
+    Logger.log("MIMEタイプ: " + file.getMimeType());
+    Logger.log("オーナー: " + file.getOwner().getEmail());
+
+    Logger.log("=== getBlob()を試みます ===");
+    const blob = file.getBlob();
+    Logger.log("Blob取得成功。サイズ: " + blob.getBytes().length + " バイト");
+
+    Logger.log("=== テストメール送信を試みます ===");
+    MailApp.sendEmail({
+      to: ADMIN_EMAIL,
+      subject: "[テスト] サムネイル埋め込み確認",
+      htmlBody: "<p>テスト画像です。</p><img src=\"cid:testphoto\" />",
+      inlineImages: { testphoto: blob },
+    });
+    Logger.log("=== メール送信成功 ===");
+  } catch (e) {
+    Logger.log("!!! エラー発生: " + e);
+  }
+}
