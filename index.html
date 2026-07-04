@@ -52,13 +52,7 @@
       <div id="selected-files-info" class="muted">写真が選択されていません</div>
     </div>
 
-    <div id="upload-warning" class="warning hidden">
-      アップロード中は画面を閉じたり、ロックしたりしないでください。
-    </div>
-
     <button id="btn-upload" class="btn-primary">アップロード実行</button>
-
-    <div id="upload-progress-list" class="progress-list"></div>
   </div>
 
   <div id="panel-history" class="panel hidden">
@@ -79,6 +73,38 @@
     <div class="modal-buttons">
       <button id="modal-cancel" class="btn-secondary">キャンセル</button>
       <button id="modal-confirm" class="btn-primary">登録</button>
+    </div>
+  </div>
+</div>
+
+<!-- アップロード進捗モーダル -->
+<div id="upload-modal-overlay" class="modal-overlay hidden">
+  <div class="modal upload-modal">
+    <h3>アップロード</h3>
+
+    <div class="upload-progress-block">
+      <div class="upload-progress-label">
+        <span>全体進捗</span>
+        <span id="upload-overall-count"></span>
+      </div>
+      <div class="progress-bar-outer"><div id="upload-overall-bar" class="progress-bar-inner"></div></div>
+      <div class="progress-status" id="upload-overall-status"></div>
+    </div>
+
+    <div class="upload-progress-block">
+      <div class="upload-progress-label" id="upload-current-filename">-</div>
+      <div class="progress-bar-outer"><div id="upload-current-bar" class="progress-bar-inner"></div></div>
+      <div class="progress-status" id="upload-current-status"></div>
+    </div>
+
+    <div id="upload-modal-warning" class="warning">
+      アップロード中は画面を閉じたり、ロックしたりしないでください。
+    </div>
+    <div id="upload-modal-message" class="muted hidden"></div>
+
+    <div class="modal-buttons">
+      <button id="btn-upload-cancel" class="btn-secondary">中断</button>
+      <button id="btn-upload-close" class="btn-primary hidden">閉じる</button>
     </div>
   </div>
 </div>

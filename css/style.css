@@ -246,3 +246,24 @@ input[type="file"] {
   gap: 8px;
   margin-top: 16px;
 }
+
+.upload-modal {
+  max-width: 400px;
+}
+.upload-progress-block {
+  margin-bottom: 18px;
+}
+.upload-progress-label {
+  display: flex;
+  justify-content: space-between;
+  font-size: 13px;
+  color: #5f6368;
+  margin-bottom: 6px;
+  word-break: break-all;
+}
+.upload-modal .warning {
+  margin: 0 0 12px;
+}
+.upload-modal .muted.error {
+  color: #d93025;
+}

@@ -9,6 +9,7 @@ const state = {
   selectedYearMonth: "",
   selectedFiles: [],
   pendingModalType: null, // 'customer' | 'site' | 'yearMonth'
+  uploadAbortController: null, // アップロード中断用（「中断」ボタンで.abort()する）
 };
 
 const NEW_VALUE = "__new__";
@@ -258,63 +259,90 @@ function updateSelectedFilesInfo() {
   }
 }
 
-function renderProgressRow(id, fileName) {
-  const container = $("#upload-progress-list");
-  let row = document.getElementById("progress-" + id);
-  if (!row) {
-    row = document.createElement("div");
-    row.className = "progress-row";
-    row.id = "progress-" + id;
-    row.innerHTML = `
-      <div class="progress-filename"></div>
-      <div class="progress-bar-outer"><div class="progress-bar-inner"></div></div>
-      <div class="progress-status"></div>
-    `;
-    container.appendChild(row);
-  }
-  row.querySelector(".progress-filename").textContent = fileName;
-  return row;
-}
-
-function updateProgressRow(id, uploaded, total, statusText) {
-  const row = document.getElementById("progress-" + id);
-  if (!row) return;
-  const pct = total > 0 ? Math.round((uploaded / total) * 100) : 0;
-  row.querySelector(".progress-bar-inner").style.width = pct + "%";
-  row.querySelector(".progress-status").textContent =
-    statusText || `${pct}% (${formatBytes(uploaded)} / ${formatBytes(total)})`;
-}
-
 function formatBytes(bytes) {
   if (bytes < 1024) return bytes + "B";
   if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + "KB";
   return (bytes / (1024 * 1024)).toFixed(1) + "MB";
 }
 
-async function uploadSingleItem(item) {
-  renderProgressRow(item.id, item.fileName);
-  updateProgressRow(item.id, item.uploadedBytes || 0, item.totalBytes, "アップロード準備中...");
+// ---------------- アップロード進捗モーダル ----------------
+
+function openUploadModal() {
+  $("#upload-modal-overlay").classList.remove("hidden");
+}
+
+function closeUploadModal() {
+  $("#upload-modal-overlay").classList.add("hidden");
+}
+
+// mode: "running"（中断ボタン表示）| "done"（閉じるボタン表示）
+function setUploadModalMode(mode) {
+  $("#btn-upload-cancel").classList.toggle("hidden", mode !== "running");
+  $("#btn-upload-cancel").disabled = false;
+  $("#btn-upload-close").classList.toggle("hidden", mode !== "done");
+  $("#upload-modal-warning").classList.toggle("hidden", mode !== "running");
+}
+
+function showUploadModalMessage(msg, isError) {
+  const el = $("#upload-modal-message");
+  el.textContent = msg || "";
+  el.classList.toggle("hidden", !msg);
+  el.classList.toggle("error", !!isError);
+}
+
+function setUploadOverallProgress(uploadedBytes, totalBytes, doneCount, totalCount) {
+  const pct = totalBytes > 0 ? Math.round((uploadedBytes / totalBytes) * 100) : 0;
+  $("#upload-overall-bar").style.width = pct + "%";
+  $("#upload-overall-count").textContent = `${doneCount} / ${totalCount} 件`;
+  $("#upload-overall-status").textContent = `${pct}% (${formatBytes(uploadedBytes)} / ${formatBytes(totalBytes)})`;
+}
+
+function setUploadCurrentProgress(fileName, uploaded, total) {
+  const pct = total > 0 ? Math.round((uploaded / total) * 100) : 0;
+  $("#upload-current-filename").textContent = fileName;
+  $("#upload-current-bar").style.width = pct + "%";
+  $("#upload-current-status").textContent = `${pct}% (${formatBytes(uploaded)} / ${formatBytes(total)})`;
+}
+
+// リセットして最初から作業できるようにする（アップロード完了後、閉じるボタン押下時に使用）
+function resetSelectionForNextUpload() {
+  state.selectedCustomerId = "";
+  state.selectedSiteId = "";
+  state.selectedYearMonth = "";
+  renderCustomerOptions();
+  renderSiteOptions();
+  renderYearMonthOptions();
+}
+
+// onProgress(uploaded, total) はアップロード中の進捗コールバック（省略可）
+// signalはAbortSignal（省略可、中断操作に対応するため）
+async function uploadSingleItem(item, onProgress, signal) {
   try {
-    const file = await Drive.uploadItem(item, (uploaded, total) => {
-      updateProgressRow(item.id, uploaded, total);
-    });
+    const file = await Drive.uploadItem(
+      item,
+      (uploaded, total) => {
+        if (onProgress) onProgress(uploaded, total);
+      },
+      signal
+    );
     await DB.updateUploadItem(item.id, {
       status: "completed",
       driveFileId: file.id,
       completedAt: new Date().toISOString(),
     });
     await DB.dropBlob(item.id);
-    updateProgressRow(item.id, item.totalBytes, item.totalBytes, "完了");
+    if (onProgress) onProgress(item.totalBytes, item.totalBytes);
     return { status: "completed", driveFileId: file.id };
   } catch (e) {
+    if (e.code === "CANCELLED") {
+      await DB.updateUploadItem(item.id, {
+        status: "paused",
+        uploadedBytes: e.uploadedBytes != null ? e.uploadedBytes : item.uploadedBytes || 0,
+      });
+      return { status: "cancelled" };
+    }
     const status = e.code === "NETWORK_ERROR" ? "paused" : "failed";
     await DB.updateUploadItem(item.id, { status, error: e.message });
-    updateProgressRow(
-      item.id,
-      item.uploadedBytes || 0,
-      item.totalBytes,
-      status === "paused" ? "中断（再接続時に自動再開します）" : "失敗: " + e.message
-    );
     return { status, error: e.message };
   }
 }
@@ -342,8 +370,12 @@ async function startUpload() {
   const yearMonth = state.selectedYearMonth;
 
   $("#btn-upload").disabled = true;
-  $("#upload-progress-list").innerHTML = "";
-  $("#upload-warning").classList.remove("hidden");
+  state.uploadAbortController = new AbortController();
+  setUploadOverallProgress(0, 1, 0, 0);
+  setUploadCurrentProgress("-", 0, 1);
+  showUploadModalMessage("");
+  setUploadModalMode("running");
+  openUploadModal();
   setStatusMessage("フォルダを準備しています...");
 
   try {
@@ -389,49 +421,93 @@ async function startUpload() {
       items.push(item);
     }
 
+    const totalBytesAll = items.reduce((sum, i) => sum + i.totalBytes, 0);
+    let completedBytesAll = 0;
+    let cancelledMidway = false;
+
     setStatusMessage("アップロード中...");
     const results = [];
-    for (const item of items) {
-      const result = await uploadSingleItem(item);
+    for (let idx = 0; idx < items.length; idx++) {
+      if (state.uploadAbortController.signal.aborted) {
+        cancelledMidway = true;
+        break;
+      }
+      const item = items[idx];
+      setUploadCurrentProgress(item.fileName, 0, item.totalBytes);
+      setUploadOverallProgress(completedBytesAll, totalBytesAll, idx, items.length);
+
+      const result = await uploadSingleItem(
+        item,
+        (uploaded, total) => {
+          setUploadCurrentProgress(item.fileName, uploaded, total);
+          setUploadOverallProgress(completedBytesAll + uploaded, totalBytesAll, idx, items.length);
+        },
+        state.uploadAbortController.signal
+      );
       results.push({ item, result });
+
+      if (result.status === "cancelled") {
+        cancelledMidway = true;
+        break;
+      }
+      completedBytesAll += item.totalBytes;
+      setUploadOverallProgress(completedBytesAll, totalBytesAll, idx + 1, items.length);
     }
 
-    const historyRecords = results.map(({ item, result }) => ({
-      id: item.id,
-      customer: item.customer,
-      site: item.site,
-      yearMonth: item.yearMonth,
-      fileName: item.fileName,
-      status: result.status,
-      startedAt: item.createdAt,
-      completedAt: result.status === "completed" ? new Date().toISOString() : null,
-      sizeBytes: item.totalBytes,
-      driveFileId: result.driveFileId || null,
-      device: item.device,
-    }));
+    const historyRecords = results
+      .filter(({ result }) => result.status !== "cancelled")
+      .map(({ item, result }) => ({
+        id: item.id,
+        customer: item.customer,
+        site: item.site,
+        yearMonth: item.yearMonth,
+        fileName: item.fileName,
+        status: result.status,
+        startedAt: item.createdAt,
+        completedAt: result.status === "completed" ? new Date().toISOString() : null,
+        sizeBytes: item.totalBytes,
+        driveFileId: result.driveFileId || null,
+        device: item.device,
+      }));
 
-    try {
-      await Drive.appendHistoryRecords(historyRecords);
-    } catch (e) {
-      console.warn("共有履歴ファイルへの反映に失敗しました（端末ローカル履歴には記録済み）", e);
+    if (historyRecords.length > 0) {
+      try {
+        await Drive.appendHistoryRecords(historyRecords);
+      } catch (e) {
+        console.warn("共有履歴ファイルへの反映に失敗しました（端末ローカル履歴には記録済み）", e);
+      }
     }
 
-    const failedCount = results.filter((r) => r.result.status !== "completed").length;
-    setStatusMessage(
-      failedCount === 0
-        ? "全てのアップロードが完了しました"
-        : `${failedCount}件が未完了です。履歴画面から再試行できます。`,
-      failedCount > 0
-    );
+    const failedCount = results.filter(
+      (r) => r.result.status === "failed" || r.result.status === "paused"
+    ).length;
 
+    setUploadModalMode("done");
+    if (cancelledMidway) {
+      showUploadModalMessage(
+        "アップロードを中断しました。未完了分は履歴画面から再開できます。",
+        true
+      );
+    } else if (failedCount === 0) {
+      showUploadModalMessage("全てのアップロードが完了しました。");
+    } else {
+      showUploadModalMessage(
+        `${failedCount}件が未完了です。履歴画面から再試行できます。`,
+        true
+      );
+    }
+
+    setStatusMessage("");
     state.selectedFiles = [];
     $("#file-input").value = "";
     updateSelectedFilesInfo();
   } catch (e) {
-    setStatusMessage("アップロード処理でエラーが発生しました: " + e.message, true);
+    setUploadModalMode("done");
+    showUploadModalMessage("アップロード処理でエラーが発生しました: " + e.message, true);
+    setStatusMessage("");
   } finally {
     $("#btn-upload").disabled = false;
-    $("#upload-warning").classList.add("hidden");
+    state.uploadAbortController = null;
   }
 }
 
@@ -441,7 +517,6 @@ async function retryPendingUploads() {
   const items = await DB.getResumableItems();
   for (const item of items) {
     if (!item.blob) continue; // Blobが失われている場合は再開不可（履歴上は失敗のまま）
-    renderProgressRow(item.id, item.fileName);
     await uploadSingleItem(item);
   }
   if (items.length > 0) {
@@ -598,6 +673,18 @@ async function init() {
   });
 
   $("#btn-upload").addEventListener("click", startUpload);
+
+  $("#btn-upload-cancel").addEventListener("click", () => {
+    if (state.uploadAbortController) {
+      state.uploadAbortController.abort();
+    }
+    $("#btn-upload-cancel").disabled = true;
+  });
+
+  $("#btn-upload-close").addEventListener("click", () => {
+    closeUploadModal();
+    resetSelectionForNextUpload();
+  });
 
   $("#tab-main").addEventListener("click", () => {
     $("#tab-main").classList.add("active");

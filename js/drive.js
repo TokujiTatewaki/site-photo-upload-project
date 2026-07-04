@@ -221,15 +221,24 @@ const Drive = (() => {
   }
 
   // サーバー側が受信済みのバイト数を確認する（レジューム時に使用）
-  async function queryUploadedBytes(sessionUrl, totalBytes) {
+  async function queryUploadedBytes(sessionUrl, totalBytes, signal) {
     const token = await Auth.getAccessToken();
-    const res = await fetch(sessionUrl, {
-      method: "PUT",
-      headers: {
-        Authorization: "Bearer " + token,
-        "Content-Range": `bytes */${totalBytes}`,
-      },
-    });
+    let res;
+    try {
+      res = await fetch(sessionUrl, {
+        method: "PUT",
+        headers: {
+          Authorization: "Bearer " + token,
+          "Content-Range": `bytes */${totalBytes}`,
+        },
+        signal,
+      });
+    } catch (networkErr) {
+      if (networkErr.name === "AbortError") {
+        throw Object.assign(new Error("アップロードが中断されました"), { code: "CANCELLED" });
+      }
+      throw networkErr;
+    }
     if (res.status === 308) {
       const range = res.headers.get("Range"); // 例: "bytes=0-524287"
       if (!range) return 0;
@@ -250,7 +259,7 @@ const Drive = (() => {
   // blobをチャンク単位でアップロードし、進捗をonProgressで通知する。
   // 中断された場合は例外を投げるので、呼び出し側でitemをpaused状態にして保存しておき、
   // 再度呼び出す際はresumeFromで再開位置を渡す。
-  async function uploadInChunks(sessionUrl, blob, totalBytes, resumeFrom, onProgress) {
+  async function uploadInChunks(sessionUrl, blob, totalBytes, resumeFrom, onProgress, signal) {
     let offset = resumeFrom || 0;
     const chunkSize = CONFIG.UPLOAD_CHUNK_SIZE;
 
@@ -268,8 +277,16 @@ const Drive = (() => {
             "Content-Range": `bytes ${offset}-${end - 1}/${totalBytes}`,
           },
           body: chunk,
+          signal,
         });
       } catch (networkErr) {
+        if (networkErr.name === "AbortError") {
+          // ユーザーによる中断操作。呼び出し側でpaused扱いにして後で再開できるようにする。
+          const err = new Error("アップロードが中断されました");
+          err.code = "CANCELLED";
+          err.uploadedBytes = offset;
+          throw err;
+        }
         // 通信断。呼び出し側でpaused扱いにして再接続後に再開できるようにする。
         const err = new Error("通信エラーによりアップロードが中断されました");
         err.code = "NETWORK_ERROR";
@@ -298,7 +315,8 @@ const Drive = (() => {
   }
 
   // itemはDBの1レコード（id, blob, fileName, folderId, totalBytes, sessionUrl, uploadedBytes, status など）
-  async function uploadItem(item, onProgress) {
+  // signalはAbortSignal（ユーザーの「中断」操作で中断できるようにするため）
+  async function uploadItem(item, onProgress, signal) {
     let sessionUrl = item.sessionUrl;
     let resumeFrom = item.uploadedBytes || 0;
 
@@ -308,7 +326,7 @@ const Drive = (() => {
     } else {
       // 既存セッションがあれば、サーバー側の受信済みバイト数を確認してから再開する
       try {
-        const status = await queryUploadedBytes(sessionUrl, item.totalBytes);
+        const status = await queryUploadedBytes(sessionUrl, item.totalBytes, signal);
         if (status && status.done) {
           return status.file;
         }
@@ -332,7 +350,8 @@ const Drive = (() => {
       async (uploaded, total) => {
         await DB.updateUploadItem(item.id, { uploadedBytes: uploaded, status: "uploading" });
         if (onProgress) onProgress(uploaded, total);
-      }
+      },
+      signal
     );
     return file;
   }
