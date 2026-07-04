@@ -82,7 +82,19 @@ function handleNotifyRequest(data) {
       return jsonResponse({ ok: false, error: "unauthorized" });
     }
 
+    // ▼デバッグ用ログ（原因調査のため一時的に追加。原因判明後に削除予定）
+    console.log("photoFileIdsJson(raw): " + data.photoFileIdsJson);
+
     const photos = fetchInlinePhotos(data);
+
+    console.log(
+      "fetchInlinePhotos結果: inlineImages件数=" +
+        Object.keys(photos.inlineImages).length +
+        " / htmlParts件数=" +
+        photos.htmlParts.length +
+        " / usedFileIds=" +
+        JSON.stringify(photos.usedFileIds)
+    );
 
     const subject = buildSubject(data);
     const body = buildBody(data);
@@ -105,6 +117,7 @@ function handleNotifyRequest(data) {
       mailOptions.inlineImages = photos.inlineImages;
     }
     MailApp.sendEmail(mailOptions);
+    console.log("MailApp.sendEmail 完了");
 
     // メール本文に埋め込んだサムネイル専用ファイル（アプリ側が通知用に一時的にアップロードした
     // 小さな画像）は、送信後にゴミ箱へ移動してGoogleドライブを汚さないようにする。
@@ -113,12 +126,13 @@ function handleNotifyRequest(data) {
       try {
         DriveApp.getFileById(fileId).setTrashed(true);
       } catch (e) {
-        // 無視する
+        console.log("ゴミ箱移動に失敗: " + fileId + " / " + e);
       }
     });
 
     return jsonResponse({ ok: true });
   } catch (err) {
+    console.log("handleNotifyRequestで例外発生: " + err);
     return jsonResponse({ ok: false, error: String(err) });
   }
 }
@@ -162,6 +176,8 @@ function fetchInlinePhotos(data) {
       usedFileIds.push(fileId);
     } catch (e) {
       // 個別の画像取得失敗は無視する（アクセス不可・既に削除済み等）
+      // ▼デバッグ用ログ（原因調査のため一時的に追加。原因判明後に削除予定）
+      console.log("画像取得に失敗: fileId=" + fileId + " / エラー=" + e);
     }
   });
 
