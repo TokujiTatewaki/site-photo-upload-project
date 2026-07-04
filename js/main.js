@@ -560,7 +560,10 @@ async function renderHistory() {
       </div>
       <div class="history-sub">${escapeHtml(item.customer)} / ${escapeHtml(item.site)} / ${formatYearMonth(item.yearMonth)}</div>
     `;
-    if (item.status === "failed" || item.status === "paused") {
+    // 中断時、実際にアップロード中だった1件は"paused"になるが、
+    // まだ順番が来ていなかった（中断でループが止まった）残りの分は"pending"のまま
+    // 履歴に残る。"completed"以外はすべて再試行できるようにする。
+    if (item.status !== "completed") {
       const btn = document.createElement("button");
       btn.textContent = "再試行";
       btn.onclick = async () => {
