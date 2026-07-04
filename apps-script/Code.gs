@@ -82,19 +82,7 @@ function handleNotifyRequest(data) {
       return jsonResponse({ ok: false, error: "unauthorized" });
     }
 
-    // ▼デバッグ用ログ（原因調査のため一時的に追加。原因判明後に削除予定）
-    console.log("photoFileIdsJson(raw): " + data.photoFileIdsJson);
-
     const photos = fetchInlinePhotos(data);
-
-    console.log(
-      "fetchInlinePhotos結果: inlineImages件数=" +
-        Object.keys(photos.inlineImages).length +
-        " / htmlParts件数=" +
-        photos.htmlParts.length +
-        " / usedFileIds=" +
-        JSON.stringify(photos.usedFileIds)
-    );
 
     const subject = buildSubject(data);
     const body = buildBody(data);
@@ -117,7 +105,6 @@ function handleNotifyRequest(data) {
       mailOptions.inlineImages = photos.inlineImages;
     }
     MailApp.sendEmail(mailOptions);
-    console.log("MailApp.sendEmail 完了");
 
     // メール本文に埋め込んだサムネイル専用ファイル（アプリ側が通知用に一時的にアップロードした
     // 小さな画像）は、送信後にゴミ箱へ移動してGoogleドライブを汚さないようにする。
@@ -126,13 +113,12 @@ function handleNotifyRequest(data) {
       try {
         DriveApp.getFileById(fileId).setTrashed(true);
       } catch (e) {
-        console.log("ゴミ箱移動に失敗: " + fileId + " / " + e);
+        // 無視する
       }
     });
 
     return jsonResponse({ ok: true });
   } catch (err) {
-    console.log("handleNotifyRequestで例外発生: " + err);
     return jsonResponse({ ok: false, error: String(err) });
   }
 }
@@ -176,8 +162,6 @@ function fetchInlinePhotos(data) {
       usedFileIds.push(fileId);
     } catch (e) {
       // 個別の画像取得失敗は無視する（アクセス不可・既に削除済み等）
-      // ▼デバッグ用ログ（原因調査のため一時的に追加。原因判明後に削除予定）
-      console.log("画像取得に失敗: fileId=" + fileId + " / エラー=" + e);
     }
   });
 
@@ -336,43 +320,4 @@ function jsonResponse(obj) {
   return ContentService.createTextOutput(JSON.stringify(obj)).setMimeType(
     ContentService.MimeType.JSON
   );
-}
-
-// ============================================================
-// ▼一時的な調査用テスト関数（原因判明後に削除予定）
-// 使い方：
-// 1. Googleドライブの .email-thumbnails フォルダ内にある画像ファイルを開く
-// 2. ブラウザのURLが https://drive.google.com/file/d/【ここがファイルID】/view
-//    のようになっているので、【ここがファイルID】の部分をコピーする
-// 3. 下のTEST_FILE_IDにそのIDを貼り付けて保存
-// 4. このエディタ上部、実行ボタンの左にある関数選択プルダウンで
-//    「testFetchOneFile」を選び、実行ボタン（▶）を押す
-// 5. 初回は権限承認が求められるので許可する
-// 6. 実行完了後、下に出てくる「実行ログ」（または画面下部のログパネル）を確認する
-// ============================================================
-function testFetchOneFile() {
-  const TEST_FILE_ID = "ここに.email-thumbnails内の画像ファイルIDを貼り付け";
-
-  try {
-    Logger.log("=== ファイル情報の取得を試みます ===");
-    const file = DriveApp.getFileById(TEST_FILE_ID);
-    Logger.log("ファイル名: " + file.getName());
-    Logger.log("MIMEタイプ: " + file.getMimeType());
-    Logger.log("オーナー: " + file.getOwner().getEmail());
-
-    Logger.log("=== getBlob()を試みます ===");
-    const blob = file.getBlob();
-    Logger.log("Blob取得成功。サイズ: " + blob.getBytes().length + " バイト");
-
-    Logger.log("=== テストメール送信を試みます ===");
-    MailApp.sendEmail({
-      to: ADMIN_EMAIL,
-      subject: "[テスト] サムネイル埋め込み確認",
-      htmlBody: "<p>テスト画像です。</p><img src=\"cid:testphoto\" />",
-      inlineImages: { testphoto: blob },
-    });
-    Logger.log("=== メール送信成功 ===");
-  } catch (e) {
-    Logger.log("!!! エラー発生: " + e);
-  }
 }
