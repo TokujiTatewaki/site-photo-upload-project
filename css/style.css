@@ -437,3 +437,18 @@ input[type="file"]::-webkit-file-upload-button {
 .upload-modal .muted.error {
   color: #d93025;
 }
+
+/* 複数ファイル並列アップロード時の「ファイル別進捗」表示。
+   .progress-list/.progress-rowは元々ページ背景を前提にしたカードだったため、
+   白背景のモーダル内では影だけだと境界が分かりにくい。淡いグレー背景＋枠線に調整する。 */
+.upload-modal .progress-list {
+  margin: 0;
+}
+.upload-modal .progress-row {
+  background: #f8f9fa;
+  box-shadow: none;
+  border: 1px solid #e8eaed;
+}
+.upload-modal .progress-row:last-child {
+  margin-bottom: 0;
+}

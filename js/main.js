@@ -396,18 +396,100 @@ function showUploadModalMessage(msg, isError) {
   el.classList.toggle("error", !!isError);
 }
 
-function setUploadOverallProgress(uploadedBytes, totalBytes, doneCount, totalCount) {
-  const pct = totalBytes > 0 ? Math.round((uploadedBytes / totalBytes) * 100) : 0;
+// 全体進捗バー用。percentは0〜100の数値をそのまま渡す（算出は呼び出し側のステージ管理で行う）。
+// 以前はアップロード済みバイト数だけから算出していたため、本体アップロードが終わった
+// 直後に100%表示になり、その後のサムネイル生成・アップロード・履歴反映が続く間も
+// 100%のまま止まって見える問題があった。現在は複数ステージの重み付き合計を
+// 呼び出し側（computeStageProgress）で算出し、ここには最終的なpercentのみ渡す。
+function setUploadOverallProgress(percent, doneCount, totalCount, uploadedBytes, totalBytes) {
+  const pct = Math.max(0, Math.min(100, Math.round(percent)));
   $("#upload-overall-bar").style.width = pct + "%";
   $("#upload-overall-count").textContent = `${doneCount} / ${totalCount} 件`;
   $("#upload-overall-status").textContent = `${pct}% (${formatBytes(uploadedBytes)} / ${formatBytes(totalBytes)})`;
 }
 
-function setUploadCurrentProgress(fileName, uploaded, total) {
+// 複数ステージ（フォルダ準備・圧縮・本体アップロード・サムネイル準備・仕上げ等）を
+// 重み付き合計することで、全体進捗が実際の残り作業量をより正確に反映するようにする。
+// stages: [{ weight: number, getFraction: () => 0〜1の完了率 }, ...]（weightの合計は100想定）
+function computeStageProgress(stages) {
+  let sum = 0;
+  for (const s of stages) {
+    const frac = Math.max(0, Math.min(1, s.getFraction()));
+    sum += s.weight * frac;
+  }
+  return Math.min(100, Math.round(sum));
+}
+
+// ---------------- 複数ファイル並列アップロードの進捗表示（スロット方式） ----------------
+// 同時アップロード数ぶんの「スロット」をあらかじめ用意し、各スロットが次々と
+// 未処理のファイルを引き継いで進捗表示を更新する（案C：並列アップロード）。
+
+function renderUploadSlots(count) {
+  const container = $("#upload-file-progress-list");
+  container.innerHTML = "";
+  for (let s = 0; s < count; s++) {
+    const row = document.createElement("div");
+    row.className = "progress-row";
+    row.id = `upload-slot-${s}`;
+    row.innerHTML = `
+      <div class="progress-filename" id="upload-slot-${s}-filename">待機中...</div>
+      <div class="progress-bar-outer"><div class="progress-bar-inner" id="upload-slot-${s}-bar"></div></div>
+      <div class="progress-status" id="upload-slot-${s}-status"></div>
+    `;
+    container.appendChild(row);
+  }
+}
+
+function setSlotFile(slotIndex, fileName) {
+  const el = $(`#upload-slot-${slotIndex}-filename`);
+  if (el) el.textContent = fileName;
+  const bar = $(`#upload-slot-${slotIndex}-bar`);
+  if (bar) bar.style.width = "0%";
+  const status = $(`#upload-slot-${slotIndex}-status`);
+  if (status) status.textContent = "";
+}
+
+function setSlotProgress(slotIndex, uploaded, total) {
   const pct = total > 0 ? Math.round((uploaded / total) * 100) : 0;
-  $("#upload-current-filename").textContent = fileName;
-  $("#upload-current-bar").style.width = pct + "%";
-  $("#upload-current-status").textContent = `${pct}% (${formatBytes(uploaded)} / ${formatBytes(total)})`;
+  const bar = $(`#upload-slot-${slotIndex}-bar`);
+  if (bar) bar.style.width = pct + "%";
+  const status = $(`#upload-slot-${slotIndex}-status`);
+  if (status) status.textContent = `${pct}% (${formatBytes(uploaded)} / ${formatBytes(total)})`;
+}
+
+// 複数ファイルを指定した並列数で同時アップロードするワーカープール。
+// 各ワーカー（スロット）は担当ファイルが完了したら次の未処理ファイルを引き継ぐ。
+// 中断（signal.abort()）時は、実行中のアイテムはfetch側で中断されそれぞれ
+// "cancelled"扱いで返るが、まだ着手していないアイテムはそのまま何もせず終了する
+// （以前の直列処理で「中断以降は一切手をつけない」としていた挙動を踏襲）。
+// 戻り値resultsは items と同じ順序・同じ長さの配列（未着手のインデックスはundefinedのまま）。
+async function runUploadQueue(items, { concurrency, signal, onItemStart, onItemProgress, onItemDone }) {
+  const results = new Array(items.length);
+  let nextIndex = 0;
+
+  async function worker(slotIndex) {
+    while (true) {
+      if (signal && signal.aborted) return;
+      const idx = nextIndex;
+      nextIndex += 1;
+      if (idx >= items.length) return;
+      const item = items[idx];
+      if (onItemStart) onItemStart(slotIndex, idx, item);
+      const result = await uploadSingleItem(
+        item,
+        (uploaded, total) => {
+          if (onItemProgress) onItemProgress(slotIndex, idx, uploaded, total);
+        },
+        signal
+      );
+      results[idx] = result;
+      if (onItemDone) onItemDone(slotIndex, idx, result);
+    }
+  }
+
+  const workerCount = Math.max(1, Math.min(concurrency, items.length));
+  await Promise.all(Array.from({ length: workerCount }, (_, s) => worker(s)));
+  return results;
 }
 
 // リセットして最初から作業できるようにする（アップロード完了後、閉じるボタン押下時に使用）
@@ -475,24 +557,72 @@ async function startUpload() {
   const customerName = findCustomerName(state.selectedCustomerId);
   const siteName = findSiteName(state.selectedSiteId);
   const yearMonth = state.selectedYearMonth;
+  const totalFileCount = state.selectedFiles.length;
+  const notifyEnabled = !!CONFIG.NOTIFY_WEBAPP_URL;
 
   $("#btn-upload").disabled = true;
   state.uploadAbortController = new AbortController();
-  setUploadOverallProgress(0, 1, 0, 0);
-  setUploadCurrentProgress("-", 0, 1);
   showUploadModalMessage("");
   setUploadModalMode("running");
   openUploadModal();
   setUploadStageMessage("フォルダを準備しています...");
 
+  // 全体進捗は「フォルダ準備・圧縮・採番・本体アップロード・サムネイル準備・仕上げ」の
+  // 重み付き合計で算出する（本体アップロードの完了だけで100%にならないようにするため）。
+  // フォルダ準備／採番／サムネイル準備／仕上げは所要時間が短く内訳を追う意味が薄いため
+  // 完了・未完了の二値、圧縮とアップロードはファイル数・バイト数から連続的に算出する。
+  const progress = {
+    folderDone: false,
+    compressedCount: 0,
+    namingDone: false,
+    uploadedBytesByItem: new Map(), // item.id -> uploadedBytes
+    totalBytes: null, // 圧縮完了まで未確定
+    thumbsDone: false,
+    finalizeDone: false,
+  };
+  const stages = [
+    { weight: 3, getFraction: () => (progress.folderDone ? 1 : 0) },
+    { weight: 12, getFraction: () => progress.compressedCount / totalFileCount },
+    { weight: 3, getFraction: () => (progress.namingDone ? 1 : 0) },
+    {
+      weight: notifyEnabled ? 60 : 77,
+      getFraction: () => {
+        if (progress.totalBytes === null) return 0;
+        if (progress.totalBytes === 0) return 1;
+        let sum = 0;
+        for (const v of progress.uploadedBytesByItem.values()) sum += v;
+        return sum / progress.totalBytes;
+      },
+    },
+    { weight: notifyEnabled ? 17 : 0, getFraction: () => (progress.thumbsDone ? 1 : 0) },
+    { weight: 5, getFraction: () => (progress.finalizeDone ? 1 : 0) },
+  ];
+  let completedFileCount = 0;
+  function refreshOverallProgress() {
+    let uploadedBytesSum = 0;
+    for (const v of progress.uploadedBytesByItem.values()) uploadedBytesSum += v;
+    setUploadOverallProgress(
+      computeStageProgress(stages),
+      completedFileCount,
+      totalFileCount,
+      uploadedBytesSum,
+      progress.totalBytes || 0
+    );
+  }
+  refreshOverallProgress();
+
   try {
     const folderId = await Drive.ensureCustomerSiteFolder(customerName, siteName);
+    progress.folderDone = true;
+    refreshOverallProgress();
 
     setUploadStageMessage("画像を圧縮しています...");
     const compressedList = [];
     for (const file of state.selectedFiles) {
       const compressed = await Compress.processFile(file);
       compressedList.push(compressed);
+      progress.compressedCount += 1;
+      refreshOverallProgress();
     }
 
     setUploadStageMessage("ファイル名を採番しています...");
@@ -504,6 +634,8 @@ async function startUpload() {
       compressedList.length,
       "jpg"
     );
+    progress.namingDone = true;
+    refreshOverallProgress();
 
     const items = [];
     // 通知メールに埋め込むサムネイル画像（DBには保存しない。この関数の実行中のみ使う一時データ）
@@ -532,38 +664,42 @@ async function startUpload() {
       emailThumbnailBlobs.push(c.emailThumbnailBlob || null);
     }
 
-    const totalBytesAll = items.reduce((sum, i) => sum + i.totalBytes, 0);
-    let completedBytesAll = 0;
-    let cancelledMidway = false;
+    progress.totalBytes = items.reduce((sum, i) => sum + i.totalBytes, 0);
+    refreshOverallProgress();
 
-    setUploadStageMessage("アップロード中...");
-    const results = [];
-    for (let idx = 0; idx < items.length; idx++) {
-      if (state.uploadAbortController.signal.aborted) {
-        cancelledMidway = true;
-        break;
-      }
-      const item = items[idx];
-      setUploadCurrentProgress(item.fileName, 0, item.totalBytes);
-      setUploadOverallProgress(completedBytesAll, totalBytesAll, idx, items.length);
+    const concurrency = Math.max(1, Math.min(CONFIG.UPLOAD_CONCURRENCY, items.length));
+    setUploadStageMessage(
+      totalFileCount > 1 ? `アップロード中...（同時${concurrency}件ずつ処理）` : "アップロード中..."
+    );
+    renderUploadSlots(concurrency);
 
-      const result = await uploadSingleItem(
-        item,
-        (uploaded, total) => {
-          setUploadCurrentProgress(item.fileName, uploaded, total);
-          setUploadOverallProgress(completedBytesAll + uploaded, totalBytesAll, idx, items.length);
-        },
-        state.uploadAbortController.signal
-      );
-      results.push({ item, result });
+    const rawResults = await runUploadQueue(items, {
+      concurrency: CONFIG.UPLOAD_CONCURRENCY,
+      signal: state.uploadAbortController.signal,
+      onItemStart: (slotIndex, idx, item) => {
+        setSlotFile(slotIndex, item.fileName);
+        progress.uploadedBytesByItem.set(item.id, 0);
+        refreshOverallProgress();
+      },
+      onItemProgress: (slotIndex, idx, uploaded, total) => {
+        setSlotProgress(slotIndex, uploaded, total);
+        progress.uploadedBytesByItem.set(items[idx].id, uploaded);
+        refreshOverallProgress();
+      },
+      onItemDone: (slotIndex, idx, result) => {
+        const item = items[idx];
+        progress.uploadedBytesByItem.set(item.id, item.totalBytes);
+        if (result.status === "completed") completedFileCount += 1;
+        refreshOverallProgress();
+      },
+    });
 
-      if (result.status === "cancelled") {
-        cancelledMidway = true;
-        break;
-      }
-      completedBytesAll += item.totalBytes;
-      setUploadOverallProgress(completedBytesAll, totalBytesAll, idx + 1, items.length);
-    }
+    const cancelledMidway = state.uploadAbortController.signal.aborted;
+    // rawResultsはitemsと同じ順序・長さ（未着手はundefined）。emailThumbnailBlobsとの
+    // 対応を保つため、元のインデックス（idx）を保持したまま扱う。
+    const results = items
+      .map((item, idx) => (rawResults[idx] ? { item, result: rawResults[idx], idx } : null))
+      .filter(Boolean);
 
     const historyRecords = results
       .filter(({ result }) => result.status !== "cancelled")
@@ -589,6 +725,8 @@ async function startUpload() {
         console.warn("共有履歴ファイルへの反映に失敗しました（端末ローカル履歴には記録済み）", e);
       }
     }
+    progress.finalizeDone = true;
+    refreshOverallProgress();
 
     const failedCount = results.filter(
       (r) => r.result.status === "failed" || r.result.status === "paused"
@@ -599,16 +737,18 @@ async function startUpload() {
     // Googleドライブの自動サムネイル生成（非同期）を待つのではなく、端末側で生成した
     // 専用の小さな画像を確実に用意しておく方式。
     let notifyPhotoFileIds = [];
-    if (CONFIG.NOTIFY_WEBAPP_URL) {
+    if (notifyEnabled) {
       setUploadStageMessage("通知メール用の画像を準備しています...");
       const thumbEntries = [];
-      for (let idx = 0; idx < results.length; idx++) {
-        if (results[idx].result.status === "completed") {
-          thumbEntries.push({ id: results[idx].item.id, blob: emailThumbnailBlobs[idx] });
+      for (const r of results) {
+        if (r.result.status === "completed") {
+          thumbEntries.push({ id: r.item.id, blob: emailThumbnailBlobs[r.idx] });
         }
       }
       notifyPhotoFileIds = await uploadNotifyThumbnails(thumbEntries);
     }
+    progress.thumbsDone = true;
+    refreshOverallProgress();
 
     setUploadModalMode("done");
     setUploadStageMessage("");
@@ -693,59 +833,96 @@ async function retryAllUploads() {
   }
 
   state.uploadAbortController = new AbortController();
-  const totalBytesAll = items.reduce((sum, i) => sum + i.totalBytes, 0);
-  let completedBytesAll = 0;
-  let cancelledMidway = false;
+  const notifyEnabled = !!CONFIG.NOTIFY_WEBAPP_URL;
+  const totalFileCount = items.length;
+
+  // まとめて再試行では、フォルダ準備・圧縮・採番は既に完了済みのファイルのみを対象にするため、
+  // ステージは「本体アップロード・サムネイル準備・仕上げ」の3段階のみで重み付けする。
+  const progress = {
+    uploadedBytesByItem: new Map(),
+    totalBytes: items.reduce((sum, i) => sum + i.totalBytes, 0),
+    thumbsDone: false,
+    finalizeDone: false,
+  };
+  const stages = [
+    {
+      weight: notifyEnabled ? 75 : 95,
+      getFraction: () => {
+        if (progress.totalBytes === 0) return 1;
+        let sum = 0;
+        for (const v of progress.uploadedBytesByItem.values()) sum += v;
+        return sum / progress.totalBytes;
+      },
+    },
+    { weight: notifyEnabled ? 20 : 0, getFraction: () => (progress.thumbsDone ? 1 : 0) },
+    { weight: 5, getFraction: () => (progress.finalizeDone ? 1 : 0) },
+  ];
+  let completedFileCount = 0;
+  function refreshOverallProgress() {
+    let uploadedBytesSum = 0;
+    for (const v of progress.uploadedBytesByItem.values()) uploadedBytesSum += v;
+    setUploadOverallProgress(
+      computeStageProgress(stages),
+      completedFileCount,
+      totalFileCount,
+      uploadedBytesSum,
+      progress.totalBytes
+    );
+  }
+
   let failedCount = 0;
   let successCount = 0;
   // 通知メールの「保存先リンク」「サムネイル画像」に使うため、完了したファイルを控えておく
   const completedItems = [];
 
-  setUploadOverallProgress(0, totalBytesAll, 0, items.length);
-  setUploadCurrentProgress("-", 0, 1);
   showUploadModalMessage("");
   setUploadModalMode("running");
   openUploadModal();
-  setUploadStageMessage("未完了ファイルを再試行しています...");
+  const concurrency = Math.max(1, Math.min(CONFIG.UPLOAD_CONCURRENCY, items.length));
+  setUploadStageMessage(
+    totalFileCount > 1
+      ? `未完了ファイルを再試行しています...（同時${concurrency}件ずつ処理）`
+      : "未完了ファイルを再試行しています..."
+  );
+  renderUploadSlots(concurrency);
+  refreshOverallProgress();
 
   try {
-    for (let idx = 0; idx < items.length; idx++) {
-      if (state.uploadAbortController.signal.aborted) {
-        cancelledMidway = true;
-        break;
-      }
-      const item = items[idx];
-      setUploadCurrentProgress(item.fileName, item.uploadedBytes || 0, item.totalBytes);
-      setUploadOverallProgress(completedBytesAll, totalBytesAll, idx, items.length);
+    const rawResults = await runUploadQueue(items, {
+      concurrency: CONFIG.UPLOAD_CONCURRENCY,
+      signal: state.uploadAbortController.signal,
+      onItemStart: (slotIndex, idx, item) => {
+        setSlotFile(slotIndex, item.fileName);
+        progress.uploadedBytesByItem.set(item.id, item.uploadedBytes || 0);
+        refreshOverallProgress();
+      },
+      onItemProgress: (slotIndex, idx, uploaded, total) => {
+        setSlotProgress(slotIndex, uploaded, total);
+        progress.uploadedBytesByItem.set(items[idx].id, uploaded);
+        refreshOverallProgress();
+      },
+      onItemDone: (slotIndex, idx, result) => {
+        const item = items[idx];
+        progress.uploadedBytesByItem.set(item.id, item.totalBytes);
+        if (result.status === "completed") {
+          completedFileCount += 1;
+          successCount++;
+          completedItems.push({ item, driveFileId: result.driveFileId });
+        } else if (result.status !== "cancelled") {
+          failedCount++;
+        }
+        refreshOverallProgress();
+      },
+    });
 
-      const result = await uploadSingleItem(
-        item,
-        (uploaded, total) => {
-          setUploadCurrentProgress(item.fileName, uploaded, total);
-          setUploadOverallProgress(completedBytesAll + uploaded, totalBytesAll, idx, items.length);
-        },
-        state.uploadAbortController.signal
-      );
-
-      if (result.status === "cancelled") {
-        cancelledMidway = true;
-        break;
-      }
-      if (result.status === "completed") {
-        successCount++;
-        completedItems.push({ item, driveFileId: result.driveFileId });
-      } else {
-        failedCount++;
-      }
-      completedBytesAll += item.totalBytes;
-      setUploadOverallProgress(completedBytesAll, totalBytesAll, idx + 1, items.length);
-    }
+    const cancelledMidway = state.uploadAbortController.signal.aborted;
+    void rawResults; // 個々の結果はonItemDone側で集計済み（ここでは中断有無だけ見る）
 
     // 通知メールに埋め込むサムネイル画像をアップロードする（通知メール機能が有効な場合のみ）。
     // まとめて再試行時は元のFileオブジェクトはもう無いため、DBに保存済みの圧縮後Blobから
     // メール用サムネイルを都度生成する。
     let notifyPhotoFileIds = [];
-    if (CONFIG.NOTIFY_WEBAPP_URL && completedItems.length > 0) {
+    if (notifyEnabled && completedItems.length > 0) {
       setUploadStageMessage("通知メール用の画像を準備しています...");
       const thumbEntries = [];
       for (const { item } of completedItems) {
@@ -762,6 +939,9 @@ async function retryAllUploads() {
       }
       notifyPhotoFileIds = await uploadNotifyThumbnails(thumbEntries);
     }
+    progress.thumbsDone = true;
+    progress.finalizeDone = true;
+    refreshOverallProgress();
 
     setUploadModalMode("done");
     setUploadStageMessage("");
