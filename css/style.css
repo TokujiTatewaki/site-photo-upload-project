@@ -147,6 +147,16 @@ input[type="month"] {
   background: #fff;
 }
 
+/* iOS Safari は type="month" の内部コントロールに独自の最小幅を持たせることがあり、
+   width:100%だけでは親要素（モーダル）の幅からはみ出す場合がある。
+   明示的にmax-width/min-widthとappearanceのリセットで確実に枠内へ収める。 */
+input[type="month"] {
+  max-width: 100%;
+  min-width: 0;
+  -webkit-appearance: none;
+  appearance: none;
+}
+
 input[type="file"] {
   width: 100%;
   padding: 8px 0;

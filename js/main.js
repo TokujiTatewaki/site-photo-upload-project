@@ -235,7 +235,13 @@ function openModal(type) {
   $("#modal-text-input").classList.toggle("hidden", type === "yearMonth");
   $("#modal-month-input").classList.toggle("hidden", type !== "yearMonth");
   $("#modal-text-input").value = "";
-  $("#modal-month-input").value = "";
+  // 施工年月の新規作成時は、入力の手間を減らすため現在の年月をあらかじめセットしておく
+  if (type === "yearMonth") {
+    const ym = getCurrentYearMonth(); // "YYYYMM"
+    $("#modal-month-input").value = `${ym.slice(0, 4)}-${ym.slice(4, 6)}`;
+  } else {
+    $("#modal-month-input").value = "";
+  }
   $("#modal-overlay").classList.remove("hidden");
 }
 
