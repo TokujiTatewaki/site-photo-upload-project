@@ -376,6 +376,7 @@ function closeUploadModal() {
 
 // mode: "running"（中断ボタン・スピナー表示）| "done"（閉じるボタン表示）
 function setUploadModalMode(mode) {
+  $("#upload-modal-title").textContent = mode === "done" ? "アップロード完了" : "アップロード中";
   $("#btn-upload-cancel").classList.toggle("hidden", mode !== "running");
   $("#btn-upload-cancel").disabled = false;
   $("#btn-upload-close").classList.toggle("hidden", mode !== "done");
