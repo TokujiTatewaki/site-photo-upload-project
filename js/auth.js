@@ -54,11 +54,13 @@ const Auth = (() => {
   // 方式を試したが、iOS SafariのITP（トラッキング防止）環境下では、
   // サイレント取得の裏でGoogleが出すCookieアクセス確認ダイアログが
   // 1回目は許可できても2回目以降"Can't access your Google Account"という
-  // 復帰不能なエラー画面になることを実機で確認したため撤回した。
-  // ログインボタン押下時は常に通常の同意画面（prompt:'consent'）を出す、
-  // という以前の確実な方式に戻している。
+  // 復帰不能なエラー画面になることを実機で確認したため、一度は撤回していた
+  // （常にprompt:'consent'を出す確実な方式にしていた）。
+  // 毎回同意画面が出る煩わしさを解消するため、再度サイレント優先方式に戻す。
+  // なお上記の不具合はSafariで「ホーム画面に追加」したPWAで確認されたものなので、
+  // 再発する場合はChromeで作成したPWAでの動作と比較して切り分けること。
   async function signIn() {
-    return requestAccessToken(true);
+    return requestAccessToken(false).catch(() => requestAccessToken(true));
   }
 
   async function getAccessToken() {
