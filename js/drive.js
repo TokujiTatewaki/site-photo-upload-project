@@ -211,6 +211,11 @@ const Drive = (() => {
     return data;
   }
 
+  // 同一idのレコードが既にあれば内容を上書きし、無ければ末尾に追加する（upsert）。
+  // 「まとめて再試行」で後から状態が変わったファイル（中断→完了 等）を反映する際、
+  // 単純に配列へ追記するだけだと同じファイルの記録が重複して残ってしまうため。
+  // Mapは既存キーへのset()では順序を変えない仕様なので、既存レコードは元の位置を
+  // 保ったまま内容だけ更新され、新規レコードのみ末尾に追加される。
   async function appendHistoryRecords(records) {
     let file = await findFileInRoot(CONFIG.HISTORY_FILENAME);
     let data;
@@ -221,7 +226,11 @@ const Drive = (() => {
       data = await readJsonFile(file.id);
       if (!Array.isArray(data)) data = [];
     }
-    const merged = data.concat(records);
+    const byId = new Map(data.map((r) => [r.id, r]));
+    for (const rec of records) {
+      byId.set(rec.id, rec);
+    }
+    const merged = Array.from(byId.values());
     await updateJsonFile(file.id, merged);
     return merged;
   }

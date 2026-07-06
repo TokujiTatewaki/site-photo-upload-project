@@ -560,6 +560,9 @@ async function startUpload() {
   const yearMonth = state.selectedYearMonth;
   const totalFileCount = state.selectedFiles.length;
   const notifyEnabled = !!CONFIG.NOTIFY_WEBAPP_URL;
+  // このアップロード実行（＝1回のアップロード操作）をまとめるための識別子。
+  // 履歴画面では、この値が同じアイテムを1つのグループとしてまとめて表示する。
+  const batchId = crypto.randomUUID();
 
   $("#btn-upload").disabled = true;
   state.uploadAbortController = new AbortController();
@@ -645,6 +648,7 @@ async function startUpload() {
       const c = compressedList[i];
       const item = {
         id: crypto.randomUUID(),
+        batchId,
         blob: c.blob,
         fileName: fileNames[i],
         mimeType: c.mimeType,
@@ -706,6 +710,8 @@ async function startUpload() {
       .filter(({ result }) => result.status !== "cancelled")
       .map(({ item, result }) => ({
         id: item.id,
+        batchId: item.batchId,
+        folderId: item.folderId,
         customer: item.customer,
         site: item.site,
         yearMonth: item.yearMonth,
@@ -875,6 +881,9 @@ async function retryAllUploads() {
   let successCount = 0;
   // 通知メールの「保存先リンク」「サムネイル画像」に使うため、完了したファイルを控えておく
   const completedItems = [];
+  // 共有履歴（Drive上のupload-history.json）を再試行後の状態で更新するため、
+  // 試行した（中断以外の）アイテムをここに集めておく。
+  const attemptedResults = [];
 
   showUploadModalMessage("");
   setUploadModalMode("running");
@@ -905,6 +914,7 @@ async function retryAllUploads() {
       onItemDone: (slotIndex, idx, result) => {
         const item = items[idx];
         progress.uploadedBytesByItem.set(item.id, item.totalBytes);
+        attemptedResults.push({ item, result });
         if (result.status === "completed") {
           completedFileCount += 1;
           successCount++;
@@ -918,6 +928,36 @@ async function retryAllUploads() {
 
     const cancelledMidway = state.uploadAbortController.signal.aborted;
     void rawResults; // 個々の結果はonItemDone側で集計済み（ここでは中断有無だけ見る）
+
+    // 再試行後の最新ステータスを共有履歴（Drive上のupload-history.json）にも反映する。
+    // 履歴画面は共有履歴側もこのアップロード実行（batchId）単位でまとめて表示するため、
+    // ここで反映しておかないと、他端末から見た共有履歴がいつまでも「中断あり」等の
+    // 古い状態のまま更新されない。
+    const historyRecords = attemptedResults
+      .filter(({ result }) => result.status !== "cancelled")
+      .map(({ item, result }) => ({
+        id: item.id,
+        batchId: item.batchId,
+        folderId: item.folderId,
+        customer: item.customer,
+        site: item.site,
+        yearMonth: item.yearMonth,
+        fileName: item.fileName,
+        status: result.status,
+        startedAt: item.createdAt,
+        completedAt: result.status === "completed" ? new Date().toISOString() : null,
+        sizeBytes: item.totalBytes,
+        driveFileId: result.driveFileId || item.driveFileId || null,
+        device: item.device,
+        thumbnailDataUrl: item.thumbnailDataUrl || null,
+      }));
+    if (historyRecords.length > 0) {
+      try {
+        await Drive.appendHistoryRecords(historyRecords);
+      } catch (e) {
+        console.warn("共有履歴ファイルへの反映に失敗しました（端末ローカル履歴には記録済み）", e);
+      }
+    }
 
     // 通知メールに埋め込むサムネイル画像をアップロードする（通知メール機能が有効な場合のみ）。
     // まとめて再試行時は元のFileオブジェクトはもう無いため、DBに保存済みの圧縮後Blobから
@@ -1057,31 +1097,143 @@ function thumbHtml(dataUrl) {
   return `<div class="thumb thumb-placeholder"></div>`;
 }
 
+// "yyyy/mm/dd hh:mm" 形式で日時を表示する（履歴画面の「作業日時」表示用）
+function formatDateTime(isoString) {
+  if (!isoString) return "";
+  const d = new Date(isoString);
+  if (Number.isNaN(d.getTime())) return "";
+  const pad2 = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}/${pad2(d.getMonth() + 1)}/${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+}
+
+// 同一アップロード実行内のファイル名は連番以外同じになるため、
+// 「202607_A社_B現場_005.jpg ～ 008.jpg」のように連番の範囲だけを示す形に短縮する。
+// 命名規則が揃っていない場合（想定外のデータ）は件数表示にフォールバックする。
+function summarizeFileNames(fileNames) {
+  if (fileNames.length === 0) return "";
+  if (fileNames.length === 1) return fileNames[0];
+  const re = /^(.*_)(\d{3})\.([^.]+)$/;
+  const first = fileNames[0].match(re);
+  if (
+    first &&
+    fileNames.every((n) => {
+      const m = n.match(re);
+      return m && m[1] === first[1] && m[3] === first[3];
+    })
+  ) {
+    const digits = first[2].length;
+    const nums = fileNames.map((n) => parseInt(n.match(re)[2], 10));
+    const min = Math.min(...nums);
+    const max = Math.max(...nums);
+    const prefix = first[1];
+    const ext = first[3];
+    return `${prefix}${String(min).padStart(digits, "0")}.${ext} ～ ${String(max).padStart(digits, "0")}.${ext}`;
+  }
+  return `${fileNames.length}件のファイル`;
+}
+
+// レコード（DBのuploadsアイテム、または共有履歴JSONの1件）から、
+// そのアイテムが属するアップロード実行（batchId）の代表的な開始時刻を取り出す。
+// 共有履歴レコードはstartedAt、ローカルDBアイテムはcreatedAtに開始時刻が入っている。
+function batchRecordTimestamp(rec) {
+  return rec.createdAt || rec.startedAt || rec.completedAt || "";
+}
+
+// アイテム/レコードの配列を、同じアップロード実行（batchId）ごとにグループ化して
+// 表示用のサマリーオブジェクトへ変換する。batchIdを持たない古いデータ（この機能追加前に
+// 記録されたもの）は、1件ずつ単独のグループとして扱う（従来通り1行ずつ表示される）。
+function groupRecordsIntoBatches(records) {
+  const groups = new Map();
+  records.forEach((rec) => {
+    const key = rec.batchId || "single:" + rec.id;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(rec);
+  });
+
+  const batches = Array.from(groups.values()).map((recs) => {
+    const sorted = recs.slice().sort((a, b) => (batchRecordTimestamp(a) < batchRecordTimestamp(b) ? -1 : 1));
+    const first = sorted[0];
+    const timestamp = batchRecordTimestamp(first);
+
+    const total = recs.length;
+    const completedCount = recs.filter((r) => r.status === "completed").length;
+    const activeCount = recs.filter((r) => r.status === "paused" || r.status === "uploading").length;
+    const pendingCount = recs.filter((r) => r.status === "pending").length;
+    const failedCount = recs.filter((r) => r.status === "failed").length;
+
+    let statusKey;
+    let statusLabelText;
+    if (completedCount === total) {
+      statusKey = "completed";
+      statusLabelText = "完了";
+    } else if (activeCount > 0) {
+      statusKey = "paused";
+      statusLabelText = `中断あり (${completedCount}/${total}件完了)`;
+    } else if (pendingCount > 0) {
+      statusKey = "pending";
+      statusLabelText = `待機中 (${completedCount}/${total}件完了)`;
+    } else if (failedCount > 0) {
+      statusKey = "failed";
+      statusLabelText = `失敗あり (${completedCount}/${total}件完了)`;
+    } else {
+      statusKey = "completed";
+      statusLabelText = "完了";
+    }
+
+    const folderRec = recs.find((r) => r.folderId);
+
+    return {
+      customer: first.customer,
+      site: first.site,
+      yearMonth: first.yearMonth,
+      device: first.device,
+      timestamp,
+      statusKey,
+      statusLabelText,
+      folderId: folderRec ? folderRec.folderId : null,
+      fileNameSummary: summarizeFileNames(recs.map((r) => r.fileName).filter(Boolean)),
+      thumbnails: recs.map((r) => r.thumbnailDataUrl || null),
+    };
+  });
+
+  // 新しい実行が上に来るように、代表時刻の降順で並べる
+  batches.sort((a, b) => (a.timestamp < b.timestamp ? 1 : -1));
+  return batches;
+}
+
+// グループ化済みのバッチ1件分の履歴行DOMを組み立てる
+function renderBatchRow(batch) {
+  const row = document.createElement("div");
+  row.className = "history-row status-" + batch.statusKey;
+  const thumbsHtml = batch.thumbnails.map((t) => thumbHtml(t)).join("");
+  const folderLinkHtml = batch.folderId
+    ? `<a class="history-batch-link" href="${buildDriveFolderUrl(batch.folderId)}" target="_blank" rel="noopener">保存先フォルダを開く</a>`
+    : "";
+  row.innerHTML = `
+    <div class="history-main">
+      <strong>${escapeHtml(batch.customer)} / ${escapeHtml(batch.site)} / ${formatYearMonth(batch.yearMonth)}</strong>
+      <span class="badge">${escapeHtml(batch.statusLabelText)}</span>
+    </div>
+    <div class="history-sub">${formatDateTime(batch.timestamp)}　${escapeHtml(batch.device || "")}</div>
+    <div class="history-batch-thumbs">${thumbsHtml}</div>
+    <div class="history-batch-filenames">${escapeHtml(batch.fileNameSummary)}</div>
+    ${folderLinkHtml}
+  `;
+  return row;
+}
+
 async function renderHistory() {
   const allLocalItems = await DB.getAllUploadItems();
   const todayItems = allLocalItems.filter((item) => isToday(item.createdAt));
 
   const localEl = $("#local-history-list");
   localEl.innerHTML = "";
-  if (todayItems.length === 0) {
+  const localBatches = groupRecordsIntoBatches(todayItems);
+  if (localBatches.length === 0) {
     localEl.innerHTML = "<p>本日の履歴はまだありません。</p>";
   }
-  todayItems.forEach((item) => {
-    const row = document.createElement("div");
-    row.className = "history-row status-" + item.status;
-    row.innerHTML = `
-      <div class="history-row-content">
-        ${thumbHtml(item.thumbnailDataUrl)}
-        <div class="history-text">
-          <div class="history-main">
-            <strong>${escapeHtml(item.fileName)}</strong>
-            <span class="badge">${statusLabel(item.status)}</span>
-          </div>
-          <div class="history-sub">${escapeHtml(item.customer)} / ${escapeHtml(item.site)} / ${formatYearMonth(item.yearMonth)}</div>
-        </div>
-      </div>
-    `;
-    localEl.appendChild(row);
+  localBatches.forEach((batch) => {
+    localEl.appendChild(renderBatchRow(batch));
   });
 
   // 中断時、実際にアップロード中だった1件は"paused"になるが、
@@ -1107,29 +1259,13 @@ async function renderHistory() {
     const shared = await Drive.loadHistory();
     const recentShared = shared.filter((rec) => isWithinDays(recordTimestamp(rec), CONFIG.SHARED_HISTORY_DAYS));
     sharedEl.innerHTML = "";
-    if (recentShared.length === 0) {
+    const sharedBatches = groupRecordsIntoBatches(recentShared);
+    if (sharedBatches.length === 0) {
       sharedEl.innerHTML = "<p>直近1週間の共有履歴はありません。</p>";
     }
-    recentShared
-      .slice()
-      .reverse()
-      .forEach((rec) => {
-        const row = document.createElement("div");
-        row.className = "history-row status-" + rec.status;
-        row.innerHTML = `
-          <div class="history-row-content">
-            ${thumbHtml(rec.thumbnailDataUrl)}
-            <div class="history-text">
-              <div class="history-main">
-                <strong>${escapeHtml(rec.fileName)}</strong>
-                <span class="badge">${statusLabel(rec.status)}</span>
-              </div>
-              <div class="history-sub">${escapeHtml(rec.customer)} / ${escapeHtml(rec.site)} / ${formatYearMonth(rec.yearMonth)} / ${escapeHtml(rec.device || "")}</div>
-            </div>
-          </div>
-        `;
-        sharedEl.appendChild(row);
-      });
+    sharedBatches.forEach((batch) => {
+      sharedEl.appendChild(renderBatchRow(batch));
+    });
   } catch (e) {
     sharedEl.innerHTML = "<p>共有履歴の取得に失敗しました（オフラインの可能性があります）。</p>";
   }

@@ -392,6 +392,32 @@ input[type="file"]::-webkit-file-upload-button {
   border-radius: 6px;
 }
 
+/* 履歴：1回のアップロード実行（バッチ）単位でまとめて表示する行の内訳。
+   サムネイルは件数分すべて並べて表示するため折り返し可能なflexにする。 */
+.history-batch-thumbs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+.history-batch-filenames {
+  font-size: 12px;
+  color: #5f6368;
+  margin-top: 8px;
+  word-break: break-all;
+}
+.history-batch-link {
+  display: inline-block;
+  margin-top: 10px;
+  padding: 6px 12px;
+  border: 1px solid #1a73e8;
+  color: #1a73e8;
+  background: #fff;
+  border-radius: 6px;
+  font-size: 13px;
+  text-decoration: none;
+}
+
 .modal-overlay {
   position: fixed;
   top: 0; left: 0; right: 0; bottom: 0;
