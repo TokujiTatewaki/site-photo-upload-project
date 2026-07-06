@@ -374,12 +374,18 @@ function closeUploadModal() {
   $("#upload-modal-overlay").classList.add("hidden");
 }
 
-// mode: "running"（中断ボタン・スピナー表示）| "done"（閉じるボタン表示）
+// mode: "running"（中断ボタン・スピナー表示）| "done"（閉じるボタン表示、完了時）
+//     | "cancelled"（閉じるボタン表示、ユーザーが中断した場合）
+const UPLOAD_MODAL_TITLES = {
+  running: "アップロード中",
+  done: "アップロード完了",
+  cancelled: "アップロード中断",
+};
 function setUploadModalMode(mode) {
-  $("#upload-modal-title").textContent = mode === "done" ? "アップロード完了" : "アップロード中";
+  $("#upload-modal-title").textContent = UPLOAD_MODAL_TITLES[mode] || UPLOAD_MODAL_TITLES.running;
   $("#btn-upload-cancel").classList.toggle("hidden", mode !== "running");
   $("#btn-upload-cancel").disabled = false;
-  $("#btn-upload-close").classList.toggle("hidden", mode !== "done");
+  $("#btn-upload-close").classList.toggle("hidden", mode === "running");
   $("#upload-modal-warning").classList.toggle("hidden", mode !== "running");
   $("#upload-modal-spinner").classList.toggle("hidden", mode !== "running");
 }
@@ -760,7 +766,7 @@ async function startUpload() {
     progress.thumbsDone = true;
     refreshOverallProgress();
 
-    setUploadModalMode("done");
+    setUploadModalMode(cancelledMidway ? "cancelled" : "done");
     setUploadStageMessage("");
     if (cancelledMidway) {
       showUploadModalMessage(
@@ -1015,7 +1021,7 @@ async function retryAllUploads() {
     progress.finalizeDone = true;
     refreshOverallProgress();
 
-    setUploadModalMode("done");
+    setUploadModalMode(cancelledMidway ? "cancelled" : "done");
     setUploadStageMessage("");
     if (cancelledMidway) {
       showUploadModalMessage(
