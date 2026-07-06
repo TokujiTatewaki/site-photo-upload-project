@@ -317,13 +317,24 @@ input[type="file"]::-webkit-file-upload-button {
   color: #5f6368;
 }
 
+/* 未完了ファイルがある旨と再試行を促す操作であることが一目でわかるよう、
+   通常のグレーの.btn-secondaryではなく警告色（他の「中断あり」表示等と同系色）で
+   目立たせる。 */
 .retry-all-btn {
   display: block;
-  margin: 0 12px 12px;
+  margin: 0 12px 16px;
   width: calc(100% - 24px);
+  padding: 14px 16px;
+  background: #f9ab00;
+  color: #fff;
+  font-weight: bold;
+  border: none;
+  border-radius: 8px;
+  box-shadow: 0 2px 6px rgba(249, 171, 0, 0.45);
 }
 .retry-all-btn:disabled {
   opacity: 0.6;
+  box-shadow: none;
 }
 
 .history-row {

@@ -166,6 +166,21 @@ function buildDriveFolderUrl(folderId) {
   return "https://drive.google.com/drive/folders/" + folderId;
 }
 
+// data URL文字列（"data:image/jpeg;base64,..."）をBlobに変換する。
+// 「まとめて再試行」時、以前のアップロード実行で既に完了済みのファイルは
+// 圧縮後Blobが完了時に破棄済み（js/db.jsのdropBlob参照）で、その写真自体からは
+// メール用サムネイルを作り直せない。代わりに履歴表示用に保存してある小さな
+// thumbnailDataUrlを転用してメールに添付するために使う（画質は低めになる）。
+function dataUrlToBlob(dataUrl) {
+  const [header, base64] = dataUrl.split(",");
+  const mimeMatch = header.match(/data:(.*?);base64/);
+  const mime = mimeMatch ? mimeMatch[1] : "image/jpeg";
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return new Blob([bytes], { type: mime });
+}
+
 // 通知メールに埋め込むサムネイル画像をDriveにアップロードし、ファイルIDの一覧を返す。
 // Googleドライブ側の自動サムネイル生成に頼らず確実にメールへ表示するため、
 // 端末側で生成した画像を専用の小さなファイルとしてアップロードしておく方式。
@@ -789,7 +804,7 @@ async function startUpload() {
       event: cancelledMidway ? "cancelled" : failedCount === 0 ? "completed" : "partial_failed",
       customer: customerName,
       site: siteName,
-      yearMonth,
+      yearMonth: formatYearMonth(yearMonth),
       uploaderName: profile.name || "",
       uploaderEmail: profile.email || "",
       successCount,
@@ -995,27 +1010,89 @@ async function retryAllUploads() {
       }
     }
 
-    // 通知メールに埋め込むサムネイル画像をアップロードする（通知メール機能が有効な場合のみ）。
-    // まとめて再試行時は元のFileオブジェクトはもう無いため、DBに保存済みの圧縮後Blobから
-    // メール用サムネイルを都度生成する。
-    // 中断の場合はstartUpload()同様、サムネイル準備自体をスキップする。
-    let notifyPhotoFileIds = [];
-    if (notifyEnabled && !cancelledMidway && completedItems.length > 0) {
+    // 通知メールは、このretryAllUploads呼び出しでまとめて再試行した分だけでなく、
+    // 元のアップロード実行（batchId）単位で「そのアップロード実行で指定した全体」の
+    // 件数・サムネイルを反映して送る。以前は「まとめて再試行」用の集約1通のみを
+    // 送っており、件数・サムネイルが今回retryした分だけになってしまっていた
+    // （中断前に完了済みだった分が抜け落ちていた）。
+    // 中断の場合はstartUpload()同様、サムネイル準備・メール送信自体をスキップする。
+    if (notifyEnabled && !cancelledMidway) {
       setUploadStageMessage("通知メール用の画像を準備しています...");
-      const thumbEntries = [];
-      for (const { item } of completedItems) {
-        if (thumbEntries.length >= CONFIG.NOTIFY_MAX_INLINE_PHOTOS) break;
-        try {
-          const thumbBlob = await Compress.makeEmailThumbnailFromBlob(item.blob);
-          thumbEntries.push({ id: item.id, blob: thumbBlob });
-        } catch (e) {
-          console.warn(
-            "通知メール用サムネイルの生成に失敗しました（本体のアップロードには影響ありません）",
-            e
-          );
+
+      // 今回実際に処理した（onItemDoneが呼ばれた）アイテムが属するアップロード実行単位。
+      const batchKeysInvolved = Array.from(
+        new Set(attemptedResults.map(({ item }) => batchKeyOf(item)))
+      );
+      // 件数・サムネイルを「そのアップロード実行で指定した全体」で計算するため、
+      // 今回の再試行対象に限らず端末内の全アイテム（軽量なメタデータのみ）を取得する。
+      const allLocalItems = await DB.getAllUploadItems();
+
+      for (const batchKey of batchKeysInvolved) {
+        const batchItems = allLocalItems.filter((i) => batchKeyOf(i) === batchKey);
+        if (batchItems.length === 0) continue;
+
+        const totalInBatch = batchItems.length;
+        const completedInBatch = batchItems.filter((i) => i.status === "completed").length;
+        const activeInBatch = batchItems.some(
+          (i) => i.status === "paused" || i.status === "uploading"
+        );
+        let batchEvent;
+        if (completedInBatch === totalInBatch) {
+          batchEvent = "completed";
+        } else if (activeInBatch) {
+          batchEvent = "cancelled";
+        } else {
+          batchEvent = "partial_failed";
         }
+
+        // このアップロード実行で完了した写真すべてのサムネイルを集める。
+        // 今回のretryで実際にアップロードし終えたファイルはメモリ上のBlobから生成し、
+        // それ以前から完了済みだったファイルは既にBlobが破棄済みのため、履歴表示用に
+        // 保存してある小さなthumbnailDataUrlを転用する（その分、画質は低くなる）。
+        const thumbEntries = [];
+        for (const rec of batchItems) {
+          if (rec.status !== "completed") continue;
+          if (thumbEntries.length >= CONFIG.NOTIFY_MAX_INLINE_PHOTOS) break;
+          const justCompleted = completedItems.find(({ item }) => item.id === rec.id);
+          if (justCompleted) {
+            try {
+              const thumbBlob = await Compress.makeEmailThumbnailFromBlob(justCompleted.item.blob);
+              thumbEntries.push({ id: rec.id, blob: thumbBlob });
+              continue;
+            } catch (e) {
+              console.warn(
+                "通知メール用サムネイルの生成に失敗しました（本体のアップロードには影響ありません）",
+                e
+              );
+            }
+          }
+          if (rec.thumbnailDataUrl) {
+            try {
+              thumbEntries.push({ id: rec.id, blob: dataUrlToBlob(rec.thumbnailDataUrl) });
+            } catch (e) {
+              console.warn("通知メール用サムネイル（履歴データからの転用）の生成に失敗しました", e);
+            }
+          }
+        }
+        const photoFileIds = await uploadNotifyThumbnails(thumbEntries);
+
+        const first = batchItems[0];
+        const profile = getUserProfile();
+        Notify.sendUploadNotification({
+          event: batchEvent,
+          customer: first.customer,
+          site: first.site,
+          yearMonth: formatYearMonth(first.yearMonth),
+          uploaderName: profile.name || "",
+          uploaderEmail: profile.email || "",
+          successCount: completedInBatch,
+          totalCount: totalInBatch,
+          timestamp: new Date().toISOString(),
+          folderUrl: first.folderId ? buildDriveFolderUrl(first.folderId) : "",
+          photoFileIdsJson: JSON.stringify(photoFileIds),
+          photoCount: completedInBatch,
+        });
       }
-      notifyPhotoFileIds = await uploadNotifyThumbnails(thumbEntries);
     }
     progress.thumbsDone = true;
     progress.finalizeDone = true;
@@ -1036,39 +1113,6 @@ async function retryAllUploads() {
         true
       );
     }
-
-    // まとめて再試行は複数の顧客/現場が混在しうるため、対象の一覧を補足情報として送る
-    const profile = getUserProfile();
-    const groups = Array.from(
-      new Set(items.map((i) => `${i.customer} / ${i.site} (${formatYearMonth(i.yearMonth)})`))
-    );
-    // 保存先フォルダへのリンクは、完了したファイルのフォルダのみ（重複除去）を対象にする
-    const folderGroups = Array.from(
-      new Map(
-        completedItems.map(({ item }) => [
-          item.folderId,
-          {
-            label: `${item.customer} / ${item.site} (${formatYearMonth(item.yearMonth)})`,
-            url: buildDriveFolderUrl(item.folderId),
-          },
-        ])
-      ).values()
-    );
-    Notify.sendUploadNotification({
-      event: cancelledMidway ? "cancelled" : failedCount === 0 ? "completed" : "partial_failed",
-      customer: "まとめて再試行",
-      site: "",
-      yearMonth: "",
-      note: groups.join("、"),
-      uploaderName: profile.name || "",
-      uploaderEmail: profile.email || "",
-      successCount,
-      totalCount: items.length,
-      timestamp: new Date().toISOString(),
-      folderLinksJson: JSON.stringify(folderGroups),
-      photoFileIdsJson: JSON.stringify(notifyPhotoFileIds),
-      photoCount: successCount,
-    });
   } catch (e) {
     setUploadModalMode("done");
     setUploadStageMessage("");
@@ -1176,13 +1220,21 @@ function batchRecordTimestamp(rec) {
   return rec.createdAt || rec.startedAt || rec.completedAt || "";
 }
 
+// レコード/アイテムが属するアップロード実行（batchId）のグループ化キー。
+// batchIdを持たない古いデータ（この機能追加前に記録されたもの）は、
+// 1件ずつ単独のグループとして扱う。履歴表示のグループ化と、通知メールを
+// アップロード実行単位で送るための集計の両方で共通して使う。
+function batchKeyOf(rec) {
+  return rec.batchId || "single:" + rec.id;
+}
+
 // アイテム/レコードの配列を、同じアップロード実行（batchId）ごとにグループ化して
 // 表示用のサマリーオブジェクトへ変換する。batchIdを持たない古いデータ（この機能追加前に
 // 記録されたもの）は、1件ずつ単独のグループとして扱う（従来通り1行ずつ表示される）。
 function groupRecordsIntoBatches(records) {
   const groups = new Map();
   records.forEach((rec) => {
-    const key = rec.batchId || "single:" + rec.id;
+    const key = batchKeyOf(rec);
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key).push(rec);
   });
