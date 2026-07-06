@@ -221,6 +221,16 @@ function escapeHtml(str) {
   });
 }
 
+// data.timestamp（クライアントが new Date().toISOString() で送ってくるUTC基準のISO文字列）を
+// 日本時間（JST）の「yyyy年mm月dd日 hh:mm:ss」表記に変換する。
+// クライアント側の端末のタイムゾーン設定に関わらず、メール上は常にJSTで統一表示するため、
+// Apps Script側（サーバー側）で明示的にAsia/Tokyoを指定してフォーマットする。
+function formatTimestampJST(isoString) {
+  const d = isoString ? new Date(isoString) : new Date();
+  if (isNaN(d.getTime())) return isoString || "";
+  return Utilities.formatDate(d, "Asia/Tokyo", "yyyy年MM月dd日 HH:mm:ss");
+}
+
 function buildSubject(data) {
   const statusLabel =
     {
@@ -248,7 +258,7 @@ function buildBody(data) {
     `施工年月　：${data.yearMonth || "-"}`,
     `作業者　　：${data.uploaderName || "-"}（${data.uploaderEmail || "-"}）`,
     `件数　　　：完了 ${data.successCount != null ? data.successCount : "-"} / 全体 ${data.totalCount != null ? data.totalCount : "-"}`,
-    `日時　　　：${data.timestamp || new Date().toISOString()}`,
+    `作業日時　：${formatTimestampJST(data.timestamp)}`,
   ];
   // 履歴画面の「まとめて再試行」のように、複数の顧客/現場が混在するケース用の補足
   if (data.note) {
@@ -292,7 +302,7 @@ function buildHtmlBody(data, photoHtmlParts) {
     "件数",
     `完了 ${data.successCount != null ? data.successCount : "-"} / 全体 ${data.totalCount != null ? data.totalCount : "-"}`
   );
-  html += row("日時", data.timestamp || new Date().toISOString());
+  html += row("作業日時", formatTimestampJST(data.timestamp));
   html += "</table>";
 
   if (data.note) {

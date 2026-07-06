@@ -743,8 +743,11 @@ async function startUpload() {
     // 通知メールに埋め込むサムネイル画像をアップロードする（通知メール機能が有効な場合のみ）。
     // Googleドライブの自動サムネイル生成（非同期）を待つのではなく、端末側で生成した
     // 専用の小さな画像を確実に用意しておく方式。
+    // 中断（cancelledMidway）の場合は、そもそもこのメール自体に写真を添付する意味が薄い
+    // （まだアップロード作業の途中であり、完了報告ではないため）ので、サムネイル生成・
+    // アップロード自体をスキップする（中断時のメール送信を早く・軽くする効果もある）。
     let notifyPhotoFileIds = [];
-    if (notifyEnabled) {
+    if (notifyEnabled && !cancelledMidway) {
       setUploadStageMessage("通知メール用の画像を準備しています...");
       const thumbEntries = [];
       for (const r of results) {
@@ -807,15 +810,35 @@ async function startUpload() {
 
 // ---------------- レジューム（再開）----------------
 
+// retryPendingUploads()の多重実行防止フラグ。
+// 補足：オンライン復帰イベント('online')は、電波の弱い場所で接続が数秒おきに
+// 切断・再接続を繰り返す（いわゆる「フラップ」）と短時間に何度も発火することがある。
+// 以前はこの関数に多重実行防止が無かったため、'online'が連続発火したり、
+// ログイン直後の自動再開とオンライン復帰の自動再開がほぼ同時に走ったりすると、
+// 同じ写真が複数の実行から並行してアップロードされ（Driveの再開可能セッションへの
+// 同時書き込みで片方が失敗する等）、DB上のステータス更新にも競合が生じる。
+// その結果、後から手動で「まとめて再試行」を押した際にも同じファイルがまだ
+// 未完了に見えてしまい再度アップロードされ、結果として1回の「再開」のつもりが
+// 完了通知メールが複数回送信される、という不具合につながっていた。
+let autoResumeInProgress = false;
+
 // オンライン復帰時・ログイン直後の自動再開用（モーダル表示なし、バックグラウンドで静かに再開する）
 async function retryPendingUploads() {
-  const items = await DB.getResumableItems();
-  for (const item of items) {
-    if (!item.blob) continue; // Blobが失われている場合は再開不可（履歴上は失敗のまま）
-    await uploadSingleItem(item);
-  }
-  if (items.length > 0) {
-    await renderHistory();
+  // 既にこの関数自体が実行中、または「まとめて再試行」等ユーザー操作による
+  // アップロードが進行中の場合は多重実行しない（上記コメント参照）。
+  if (autoResumeInProgress || state.uploadAbortController) return;
+  autoResumeInProgress = true;
+  try {
+    const items = await DB.getResumableItems();
+    for (const item of items) {
+      if (!item.blob) continue; // Blobが失われている場合は再開不可（履歴上は失敗のまま）
+      await uploadSingleItem(item);
+    }
+    if (items.length > 0) {
+      await renderHistory();
+    }
+  } finally {
+    autoResumeInProgress = false;
   }
 }
 
@@ -823,13 +846,21 @@ async function retryPendingUploads() {
 // （全体／個別ファイルの進捗バー、中断ボタン）を表示しながら、
 // 中断・待機中・失敗の未完了ファイルをすべて連続で再試行する。
 async function retryAllUploads() {
-  if (state.uploadAbortController) return; // 実行中の多重起動防止
+  if (state.uploadAbortController || autoResumeInProgress) return; // 実行中の多重起動防止
+
+  // ガード（state.uploadAbortController）は、この後にawaitが挟まる前、
+  // ここで同期的に確保しておく。以前はDB.getResumableItems()のawaitの後に
+  // セットしていたため、その待ち時間の間に本関数が連続して呼ばれると
+  // ガードが効かずに複数回並行実行されてしまう隙があった（同じファイルの
+  // 重複アップロードや完了通知メールの重複送信の原因になっていた）。
+  state.uploadAbortController = new AbortController();
 
   const resumable = await DB.getResumableItems();
   const items = resumable.filter((i) => i.blob);
   const missingBlobCount = resumable.length - items.length;
 
   if (items.length === 0) {
+    state.uploadAbortController = null;
     if (missingBlobCount > 0) {
       alert(
         "再試行対象のファイルデータが端末に残っていないため、自動では再開できません。お手数ですが、写真を選び直して再度アップロードしてください。"
@@ -839,7 +870,6 @@ async function retryAllUploads() {
     return;
   }
 
-  state.uploadAbortController = new AbortController();
   const notifyEnabled = !!CONFIG.NOTIFY_WEBAPP_URL;
   const totalFileCount = items.length;
 
@@ -962,8 +992,9 @@ async function retryAllUploads() {
     // 通知メールに埋め込むサムネイル画像をアップロードする（通知メール機能が有効な場合のみ）。
     // まとめて再試行時は元のFileオブジェクトはもう無いため、DBに保存済みの圧縮後Blobから
     // メール用サムネイルを都度生成する。
+    // 中断の場合はstartUpload()同様、サムネイル準備自体をスキップする。
     let notifyPhotoFileIds = [];
-    if (notifyEnabled && completedItems.length > 0) {
+    if (notifyEnabled && !cancelledMidway && completedItems.length > 0) {
       setUploadStageMessage("通知メール用の画像を準備しています...");
       const thumbEntries = [];
       for (const { item } of completedItems) {
